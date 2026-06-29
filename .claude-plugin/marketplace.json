@@ -1,0 +1,17 @@
+{
+  "name": "strixgov",
+  "owner": { "name": "Strix", "url": "https://www.strixgov.com" },
+  "metadata": {
+    "description": "Strix Open — the SGRF v1 governance-review skills. Review how any system governs execution, score it on four orthogonal axes, and wire a first governed action. Advisory; no Strix account required."
+  },
+  "plugins": [
+    {
+      "name": "strix-governance",
+      "source": "./",
+      "version": "0.1.0",
+      "category": "security",
+      "description": "Run a Strix Governance Review (SGRF v1) on a system (/runtime-governance-review), a PR (/govern-pr), or a release (/release-readiness) — and wire a first governed, verifiable action (/strix-wire). The three review lenses are advisory and run anywhere; strix-wire needs a Strix runtime.",
+      "tags": ["governance", "sgrf", "ai-agents", "execution-control", "code-review"]
+    }
+  ]
+}
