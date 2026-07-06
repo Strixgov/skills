@@ -1,8 +1,13 @@
 # `/strix-wire` — wire Strix governance into a customer codebase
 
-A Claude Code skill that takes a customer codebase from zero to a signed,
-externally verifiable Strix evidence record in **about two minutes** —
-replacing the 15-minute manual quickstart Path A.
+A Claude Code skill that takes a customer codebase from zero to a
+kernel-evaluated mutation with a queryable Strix evidence record in
+**about two minutes** — replacing the 15-minute manual quickstart Path A.
+
+The record is *recorded wire evidence* (kernel decision + payload/result
+hashes under a client-generated `evidenceId`) — it is not Ed25519-signed
+at ingest, so it reports as an unsigned record on verification surfaces.
+VERIFIED is reserved for signed records.
 
 ## What ships in this directory
 
@@ -57,17 +62,22 @@ Exit codes: `0` (candidates found), `2` (none), `3` (bad invocation).
 
 Both helpers implement the same three-step contract:
 
-1. POST `/api/v1/evaluate` with `{ capabilityId, actor, payloadHash }`.
-   Returns `allow` / `deny` / `escalate`.
+1. POST `/api/v1/evaluate` with `{ capabilityId, actor, context:
+   { payloadHash, source } }`. Returns `allow` / `deny` / `escalate`.
 2. Run the caller's operation only on `allow`.
-3. POST `/api/v1/evidence` with `{ capabilityId, actor, tenantId,
-   payload, payloadHash, resultHash, outcome, durationMs }`. Returns
-   `{ evidenceId, ... }`.
+3. POST `/api/v1/evidence/ingest` with `{ records: [{ tenantId,
+   capabilityId, actorId, actorRole, decision, reason, source,
+   evidenceHash, evidenceId, timestamp, metadata }] }`. The response
+   carries batch counters (`{ ingested, skipped, quarantined, ... }`),
+   not per-record ids — the helper generates the `evidenceId` client-side
+   (UUID v4), binds it into `evidenceHash`, and confirms
+   `ingested + skipped >= 1` before reporting success.
 
 The canonical-bytes contract from `solo_builder._canonical` is reproduced
-inside each helper so the evidenceId hashes the same bytes the offline
-`@strixgov/verifier` will hash. Divergence breaks cross-SDK byte
-determinism (ADR-005 §4) — don't edit the helpers post-copy.
+inside each helper so `payloadHash` / `resultHash` / `evidenceHash`
+reproduce byte-for-byte across the Python and TypeScript helpers.
+Divergence breaks cross-SDK byte determinism (ADR-005 §4) — don't edit
+the helpers post-copy.
 
 ## Capability-ID reference
 

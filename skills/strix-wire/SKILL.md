@@ -1,13 +1,20 @@
 ---
 name: strix-wire
-description: Wire Strix governance into the current codebase. Scans for an irreversible mutation (payment charges, deletes, sends, schema migrations), wraps the call site with governedAction(), runs it once, and prints the resulting evidenceId. Use when the user asks to "wire Strix", "wire up Strix", "add Strix to this project", "set up governed actions", "get a VERIFIED record", or runs /strix-wire.
+description: Wire Strix governance into the current codebase. Scans for an irreversible mutation (payment charges, deletes, sends, schema migrations), wraps the call site with governedAction(), runs it once, and prints the resulting evidenceId. Use when the user asks to "wire Strix", "wire up Strix", "add Strix to this project", "set up governed actions", "get an evidence record", or runs /strix-wire.
 ---
 
-# /strix-wire — five steps to a VERIFIED record
+# /strix-wire — five steps to a recorded governed action
 
-This skill takes a customer codebase from zero to a signed, externally verifiable
-Strix evidence record in **about two minutes** — replacing the 15-minute manual
-quickstart Path A.
+This skill takes a customer codebase from zero to a kernel-evaluated mutation
+with a queryable Strix evidence record in **about two minutes** — replacing the
+15-minute manual quickstart Path A.
+
+> **Claim discipline:** the record this helper produces is *recorded wire
+> evidence* — the kernel's decision plus the payload/result hashes, persisted
+> under a client-generated `evidenceId`. It is not Ed25519-signed at ingest,
+> so it reports as an unsigned record on verification surfaces (VERIFIED is
+> reserved for signed records). What it proves: the kernel evaluated this
+> action before it ran, and the recorded hashes bind the parameters/result.
 
 The skill is **interactive but conservative**: it stops at the proposal step
 before wrapping production code, and it never runs the mutation without an
@@ -158,7 +165,7 @@ result, evidence_id = governed_action(
         amount=amount, currency="usd", source=token
     ),
 )
-print(f"[strix] VERIFIED evidenceId={evidence_id}")
+print(f"[strix] recorded evidenceId={evidence_id}")
 ```
 
 Notes on the wrap:
@@ -191,7 +198,7 @@ const { result, evidenceId } = await governedAction(
     amount, currency: "usd", source: token,
   }),
 );
-console.log(`[strix] VERIFIED evidenceId=${evidenceId}`);
+console.log(`[strix] recorded evidenceId=${evidenceId}`);
 ```
 
 If the original line was synchronous (no `await`), keep the body sync but
@@ -237,14 +244,17 @@ If running the mutation requires real-money flow or production secrets,
 **stop and tell the user** — don't try to find creative ways around it.
 The skill's promise is to wrap; the user runs it in their own staging.
 
-When the wrapped call runs, the helper prints:
+When the wrapped call runs, the wrapped call site prints:
 ```
-[strix] VERIFIED evidenceId=evt_01XJHnTcF6C7rLxPGH93GpHD
+[strix] recorded evidenceId=3f2b4a1c-9e0d-4abc-8def-123456789012
 ```
 
-Echo that line back as the skill's final output, plus the verification URL
-(canonical host `www.strixgov.com`; the evidenceId is whatever the helper
-returned — the value below is illustrative):
+The `evidenceId` is a UUID the helper generates client-side and sends inside
+the record (the ingest endpoint returns batch counters, not per-record ids —
+the helper confirms `ingested + skipped >= 1` before reporting success).
+
+Echo that line back as the skill's final output, plus the proof-lookup URL
+(canonical host `www.strixgov.com`; the value below is illustrative):
 ```
 https://www.strixgov.com/proof/<evidenceId>
 ```
@@ -275,7 +285,7 @@ their review.
   contents**: ask before overwriting. Show a diff.
 - **Strix API returns 401/403**: tell the user their key/tenant pair is
   wrong; don't retry with stub data — the skill's whole value is the
-  authentic VERIFIED record.
+  authentic evidence record.
 - **Strix API returns 5xx or network error**: surface the error and offer
   to retry once with backoff. After two retries, stop.
 
@@ -296,13 +306,16 @@ their review.
 ## Why this works
 
 The Strix evidence stack (see `CLAUDE.md` → "Strix evidence stack") makes
-the VERIFIED record the **only** thing that proves a governed action
+the evidence record the **only** thing that proves a governed action
 happened. Every other step (scanner, wrap, copy-helper) is mechanical
-setup; the moment of truth is the helper's POST to the Strix kernel and
-the evidenceId in the response. That evidenceId is publicly verifiable
-against the canonical JWKS at
-`https://www.strixgov.com/.well-known/strix-jwks.json` — no trust in the
-agent, the customer's app, or solo-builder-core required.
+setup; the moments of truth are the helper's pre-flight POST to the
+kernel (`/api/v1/evaluate` — the mutation does not run unless the kernel
+allows it) and the evidence POST that persists the decision plus the
+payload/result hashes under the client-generated evidenceId. Signed
+records on the same platform verify against the canonical JWKS at
+`https://www.strixgov.com/.well-known/strix-jwks.json`; the wire record
+itself is honest about being unsigned — it is the kernel's recorded
+decision, not a cryptographic signature.
 
 The 2-minute promise depends on the scanner finding a clean candidate on
 the first try. When it doesn't, falling back to "show me your candidate"

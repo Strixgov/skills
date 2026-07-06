@@ -1,5 +1,5 @@
 /**
- * Customer-side helper that turns one mutation into a VERIFIED Strix record.
+ * Customer-side helper that turns one mutation into a recorded Strix action.
  *
  * Reference implementation copied into customer codebases by the
  * `/strix-wire` Claude Code skill. The contract is small and intentionally
@@ -7,15 +7,24 @@
  *
  *   1. Caller hands us a `capabilityId`, the request `payload` (no secrets),
  *      and an async function that performs the mutation.
- *   2. We ask the Strix kernel whether the action is allowed.
+ *   2. We ask the Strix kernel whether the action is allowed
+ *      (`POST /api/v1/evaluate`).
  *   3. If allowed, we run the operation.
- *   4. We POST the result envelope to the Strix evidence endpoint and
- *      return `{ result, evidenceId }`.
+ *   4. We POST an evidence record to `POST /api/v1/evidence/ingest`
+ *      (body: `{ records: [...] }`) and return `{ result, evidenceId }`.
  *
- * The byte-shape of the evidence envelope matches the canonicalization
- * contract in `solo_builder/_canonical.py` (sorted keys, no whitespace,
- * UTF-8) so the `evidenceId` we get back hashes the same bytes the offline
- * `@strixgov/verifier` will hash. Cross-SDK byte determinism is preserved.
+ * Evidence identity: the ingest endpoint's response carries batch counters
+ * (`{ ingested, skipped, quarantined, ... }`), NOT per-record ids — so this
+ * helper GENERATES the `evidenceId` client-side (UUID v4), sends it inside
+ * the record, and returns that same id after confirming the batch was
+ * accepted. The record's dedup identity server-side is
+ * `(tenantId, evidenceHash)`; we bind the generated `evidenceId` into the
+ * hashed material so every execution produces a distinct evidence row
+ * (a retry of the SAME record is idempotent — reported as `skipped`).
+ *
+ * Canonical bytes match the contract in `solo_builder/_canonical.py`
+ * (sorted keys, no whitespace, UTF-8) so hashes reproduce across the
+ * TypeScript and Python helpers byte-for-byte.
  *
  * Zero npm dependencies — uses global `fetch` and `crypto.subtle`. Works
  * in Node 18+ and any modern browser/edge runtime.
@@ -103,15 +112,42 @@ async function sha256Hex(s: string): Promise<string> {
     .join("");
 }
 
+/** UUID v4 via WebCrypto; RNG fallback covers runtimes without randomUUID. */
+function newEvidenceId(): string {
+  const c = globalThis.crypto as Crypto & { randomUUID?: () => string };
+  if (typeof c?.randomUUID === "function") return c.randomUUID();
+  const bytes = new Uint8Array(16);
+  c.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // Transport
 // ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Remove the API key from any text that could reach logs, exceptions, or
+ * CI comments. Mirrors the `_scrub` discipline in `governed_action.py` —
+ * a credential must never leak through an error path.
+ */
+function makeScrubber(apiKey: string): (text: string) => string {
+  return (text: string) => {
+    if (!apiKey) return text;
+    let out = text.split(`Bearer ${apiKey}`).join("Bearer <redacted>");
+    out = out.split(apiKey).join("<redacted>");
+    return out;
+  };
+}
 
 async function postJSON(
   url: string,
   body: unknown,
   headers: Record<string, string>,
   timeoutMs: number,
+  scrub: (text: string) => string,
 ): Promise<Record<string, unknown>> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -124,23 +160,100 @@ async function postJSON(
       signal: controller.signal,
     });
   } catch (err) {
-    throw new StrixUnreachable(`network error: ${(err as Error).message}`);
+    throw new StrixUnreachable(`network error: ${scrub((err as Error).message)}`);
   } finally {
     clearTimeout(timer);
   }
   const text = await resp.text();
   if (resp.status >= 400 && resp.status < 500) {
-    throw new StrixDenied(`strix ${resp.status}: ${text.slice(0, 200)}`);
+    throw new StrixDenied(`strix ${resp.status}: ${scrub(text.slice(0, 200))}`);
   }
   if (resp.status >= 500) {
-    throw new StrixError(`strix ${resp.status}: ${text.slice(0, 200)}`);
+    throw new StrixError(`strix ${resp.status}: ${scrub(text.slice(0, 200))}`);
   }
   if (!text) return {};
   try {
     return JSON.parse(text) as Record<string, unknown>;
-  } catch (err) {
-    throw new StrixUnreachable(`strix returned non-JSON: ${text.slice(0, 200)}`);
+  } catch {
+    throw new StrixUnreachable(`strix returned non-JSON: ${scrub(text.slice(0, 200))}`);
   }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Evidence envelope — matches the /api/v1/evidence/ingest IngestRecord
+// ──────────────────────────────────────────────────────────────────────
+
+interface EvidenceParams {
+  base: string;
+  headers: Record<string, string>;
+  timeout: number;
+  scrub: (text: string) => string;
+  capabilityId: string;
+  actor: string;
+  tenantId: string;
+  payloadHash: string;
+  resultHash: string | null;
+  outcome: "ok" | "error";
+  durationMs: number;
+  /** Included only on the success path — the error path records hashes
+   *  only, so params of a failed operation are never persisted. */
+  payload?: Record<string, unknown>;
+}
+
+async function postEvidence(p: EvidenceParams): Promise<string> {
+  const evidenceId = newEvidenceId();
+  // Server-side dedup identity is (tenantId, evidenceHash). Binding the
+  // fresh evidenceId into the hashed material makes every execution a
+  // distinct evidence row while keeping a retry of the SAME record
+  // idempotent (the server reports it as `skipped`).
+  const evidenceHash = await sha256Hex(
+    canonicalize({
+      capabilityId: p.capabilityId,
+      evidenceId,
+      outcome: p.outcome,
+      payloadHash: p.payloadHash,
+      resultHash: p.resultHash,
+    }),
+  );
+  const record: Record<string, unknown> = {
+    tenantId: p.tenantId,
+    capabilityId: p.capabilityId,
+    actorId: p.actor,
+    actorRole: "operator",
+    decision: "allow",
+    reason:
+      p.outcome === "ok"
+        ? "governed action executed"
+        : "governed action failed after allow",
+    source: "strix-wire",
+    evidenceHash,
+    evidenceId,
+    timestamp: new Date().toISOString(),
+    metadata: {
+      payloadHash: p.payloadHash,
+      resultHash: p.resultHash,
+      outcome: p.outcome,
+      durationMs: p.durationMs,
+      ...(p.payload !== undefined ? { payload: p.payload } : {}),
+    },
+  };
+  const resp = await postJSON(
+    `${p.base}${EVIDENCE_PATH}`,
+    { records: [record] },
+    p.headers,
+    p.timeout,
+    p.scrub,
+  );
+  const ingested = Number(resp.ingested ?? 0);
+  const skipped = Number(resp.skipped ?? 0);
+  const quarantined = Number(resp.quarantined ?? 0);
+  if (ingested + skipped < 1) {
+    throw new StrixError(
+      `evidence endpoint accepted 0 records (ingested=${ingested}, ` +
+        `skipped=${skipped}, quarantined=${quarantined})`,
+    );
+  }
+  return evidenceId;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -150,7 +263,7 @@ async function postJSON(
 export interface GovernedActionInput {
   /** e.g. `"payment.charge"`, `"database.delete"` — kernel capability ID. */
   capabilityId: string;
-  /** Non-secret request parameters. Hashed and signed. */
+  /** Non-secret request parameters. Hashed and recorded. */
   payload: Record<string, unknown>;
   /** Who's running this. Defaults to `process.env.STRIX_ACTOR` or `"solo-cli"`. */
   actor?: string;
@@ -185,14 +298,18 @@ export async function governedAction<T>(
   const env =
     (typeof process !== "undefined" && process.env) ||
     ({} as NodeJS.ProcessEnv);
-  const apiKey = input.apiKey ?? env.STRIX_API_KEY;
-  const tenantId = input.tenantId ?? env.STRIX_TENANT_ID;
+  // Trim surrounding whitespace/newlines — a secret saved with a trailing
+  // newline would otherwise produce an invalid (and credential-leaking)
+  // Authorization header. Mirrors governed_action.py.
+  const apiKey = (input.apiKey ?? env.STRIX_API_KEY ?? "").trim();
+  const tenantId = (input.tenantId ?? env.STRIX_TENANT_ID ?? "").trim();
   if (!apiKey || !tenantId) {
     throw new StrixError(
       "STRIX_API_KEY and STRIX_TENANT_ID must be set " +
         "(pass them explicitly or export them in the environment).",
     );
   }
+  const scrub = makeScrubber(apiKey);
   const actor = input.actor ?? env.STRIX_ACTOR ?? "solo-cli";
   const base = (
     input.strixUrl ??
@@ -205,24 +322,27 @@ export async function governedAction<T>(
   };
   const timeout = input.timeoutMs ?? 5000;
 
-  // 1. Pre-flight evaluate.
+  // 1. Pre-flight evaluate. The payload hash rides in `context` — the
+  //    kernel's public input boundary — so it lands on the decision's
+  //    audit row (same channel the FailGuard verdict uses).
   const payloadHash = await sha256Hex(canonicalize(input.payload));
   const decision = await postJSON(
     `${base}${EVALUATE_PATH}`,
     {
       capabilityId: input.capabilityId,
       actor: { id: actor, role: "operator" },
-      payloadHash,
+      context: { payloadHash, source: "strix-wire" },
     },
     headers,
     timeout,
+    scrub,
   );
   const action = String(
     (decision.action ?? decision.decision ?? "").toString(),
   ).toLowerCase();
   if (action === "deny") {
     const reason = String(decision.reason ?? "policy denied");
-    throw new StrixDenied(`${input.capabilityId}: ${reason}`);
+    throw new StrixDenied(`${input.capabilityId}: ${scrub(reason)}`);
   }
   if (action === "escalate" || action === "require_approval") {
     throw new StrixApprovalRequired(
@@ -231,7 +351,7 @@ export async function governedAction<T>(
     );
   }
   if (action !== "allow") {
-    throw new StrixError(`unexpected kernel decision: ${action}`);
+    throw new StrixError(`unexpected kernel decision: ${scrub(action)}`);
   }
 
   // 2. Run.
@@ -241,21 +361,19 @@ export async function governedAction<T>(
     result = await operation();
   } catch (err) {
     try {
-      await postJSON(
-        `${base}${EVIDENCE_PATH}`,
-        {
-          records: [{
-            capabilityId: input.capabilityId,
-            actor,
-            tenantId,
-            payloadHash,
-            outcome: "error",
-            durationMs: Date.now() - t0,
-          }],
-        },
+      await postEvidence({
+        base,
         headers,
         timeout,
-      );
+        scrub,
+        capabilityId: input.capabilityId,
+        actor,
+        tenantId,
+        payloadHash,
+        resultHash: null,
+        outcome: "error",
+        durationMs: Date.now() - t0,
+      });
     } catch {
       /* swallow — original error must propagate */
     }
@@ -264,31 +382,20 @@ export async function governedAction<T>(
 
   // 3. Record evidence.
   const resultHash = await sha256Hex(canonicalize(toJSONable(result)));
-  const record = await postJSON(
-    `${base}${EVIDENCE_PATH}`,
-    {
-      records: [{
-        capabilityId: input.capabilityId,
-        actor,
-        tenantId,
-        payload: input.payload,
-        payloadHash,
-        resultHash,
-        outcome: "ok",
-        durationMs: Date.now() - t0,
-      }],
-    },
+  const evidenceId = await postEvidence({
+    base,
     headers,
     timeout,
-  );
-  const responseRecords = Array.isArray(record.records) ? record.records : [];
-  const firstRecord = responseRecords[0] as Record<string, unknown> | undefined;
-  const evidenceId = String(firstRecord?.evidenceId ?? firstRecord?.id ?? record.evidenceId ?? record.id ?? "");
-  if (!evidenceId) {
-    throw new StrixError(
-      `evidence endpoint returned no id: ${JSON.stringify(record)}`,
-    );
-  }
+    scrub,
+    capabilityId: input.capabilityId,
+    actor,
+    tenantId,
+    payloadHash,
+    resultHash,
+    outcome: "ok",
+    durationMs: Date.now() - t0,
+    payload: input.payload,
+  });
   return { result, evidenceId };
 }
 

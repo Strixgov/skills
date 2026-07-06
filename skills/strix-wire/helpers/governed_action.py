@@ -1,4 +1,4 @@
-"""Customer-side helper that turns one mutation into a VERIFIED Strix record.
+"""Customer-side helper that turns one mutation into a recorded Strix action.
 
 This is the reference implementation copied into customer codebases by the
 ``/strix-wire`` Claude Code skill. The contract is small and intentionally
@@ -6,15 +6,24 @@ boring:
 
 1. Caller hands us a ``capability_id``, the request ``payload`` (no secrets),
    and the operation to run.
-2. We ask the Strix kernel whether the action is allowed.
+2. We ask the Strix kernel whether the action is allowed
+   (``POST /api/v1/evaluate``).
 3. If allowed, we run the operation.
-4. We POST the result envelope to the Strix evidence endpoint and return
-   ``(result, evidence_id)``.
+4. We POST an evidence record to ``POST /api/v1/evidence/ingest``
+   (body: ``{"records": [...]}``) and return ``(result, evidence_id)``.
 
-The byte-shape of the evidence envelope matches the
-``solo_builder._canonical`` contract (sorted keys, no whitespace, UTF-8)
-so the evidenceId we get back hashes the same bytes the offline
-``@strixgov/verifier`` will hash. Cross-SDK byte determinism is preserved.
+Evidence identity: the ingest endpoint's response carries batch counters
+(``{ingested, skipped, quarantined, ...}``), NOT per-record ids — so this
+helper GENERATES the ``evidence_id`` client-side (UUID v4), sends it inside
+the record, and returns that same id after confirming the batch was
+accepted. The record's dedup identity server-side is
+``(tenantId, evidenceHash)``; we bind the generated ``evidence_id`` into the
+hashed material so every execution produces a distinct evidence row
+(a retry of the SAME record is idempotent — reported as ``skipped``).
+
+Canonical bytes match ``solo_builder._canonical`` (sorted keys, no
+whitespace, UTF-8) so hashes reproduce across the Python and TypeScript
+helpers byte-for-byte.
 
 This module only depends on the Python standard library plus ``requests``
 (optional — falls back to ``urllib`` if ``requests`` is unavailable). It
@@ -36,7 +45,9 @@ import hashlib
 import json
 import os
 import time
+import uuid
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 T = TypeVar("T")
@@ -144,9 +155,92 @@ def _post_json(url: str, body: dict, headers: dict, timeout: float = 5.0) -> dic
         raise StrixError(f"strix {status}: {_scrub(text[:200])}")
     try:
         return json.loads(text) if text else {}
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
         raise StrixUnreachable(f"strix returned non-JSON: {_scrub(text[:200])}") from None
 
+
+# ---------------------------------------------------------------------------
+# Evidence envelope — matches the /api/v1/evidence/ingest IngestRecord
+# ---------------------------------------------------------------------------
+
+
+def _post_evidence(
+    *,
+    base: str,
+    headers: dict,
+    timeout: float,
+    capability_id: str,
+    actor: str,
+    tenant_id: str,
+    payload_hash: str,
+    result_hash: str | None,
+    outcome: str,
+    duration_ms: int,
+    payload: dict[str, Any] | None = None,
+) -> str:
+    """POST one evidence record; return the client-generated evidence id.
+
+    Server-side dedup identity is ``(tenantId, evidenceHash)``. Binding the
+    fresh ``evidence_id`` into the hashed material makes every execution a
+    distinct evidence row while keeping a retry of the SAME record
+    idempotent (the server reports it as ``skipped``).
+
+    ``payload`` is included only on the success path — the error path
+    records hashes only, so params of a failed operation are never
+    persisted.
+    """
+    evidence_id = str(uuid.uuid4())
+    evidence_hash = _sha256_hex(
+        _canonicalize(
+            {
+                "capabilityId": capability_id,
+                "evidenceId": evidence_id,
+                "outcome": outcome,
+                "payloadHash": payload_hash,
+                "resultHash": result_hash,
+            }
+        )
+    )
+    metadata: dict[str, Any] = {
+        "payloadHash": payload_hash,
+        "resultHash": result_hash,
+        "outcome": outcome,
+        "durationMs": duration_ms,
+    }
+    if payload is not None:
+        metadata["payload"] = payload
+    record = {
+        "tenantId": tenant_id,
+        "capabilityId": capability_id,
+        "actorId": actor,
+        "actorRole": "operator",
+        "decision": "allow",
+        "reason": (
+            "governed action executed"
+            if outcome == "ok"
+            else "governed action failed after allow"
+        ),
+        "source": "strix-wire",
+        "evidenceHash": evidence_hash,
+        "evidenceId": evidence_id,
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "metadata": metadata,
+    }
+    resp = _post_json(
+        f"{base}{_EVIDENCE_PATH}",
+        body={"records": [record]},
+        headers=headers,
+        timeout=timeout,
+    )
+    ingested = int(resp.get("ingested") or 0)
+    skipped = int(resp.get("skipped") or 0)
+    quarantined = int(resp.get("quarantined") or 0)
+    if ingested + skipped < 1:
+        raise StrixError(
+            "evidence endpoint accepted 0 records "
+            f"(ingested={ingested}, skipped={skipped}, quarantined={quarantined})"
+        )
+    return evidence_id
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +263,7 @@ def governed_action(
 
     Args:
         capability_id: e.g. ``"payment.charge"``, ``"database.delete"``.
-        payload:       Non-secret request parameters. Hashed and signed.
+        payload:       Non-secret request parameters. Hashed and recorded.
         operation:     A zero-arg callable that performs the mutation.
         actor:         Who is running the action. Defaults to ``$STRIX_ACTOR``
                        or ``"solo-cli"``.
@@ -203,14 +297,16 @@ def governed_action(
         "X-Tenant-Id": tenant,
     }
 
-    # 1. Pre-flight: ask the kernel for a decision.
+    # 1. Pre-flight: ask the kernel for a decision. The payload hash rides
+    #    in `context` — the kernel's public input boundary — so it lands on
+    #    the decision's audit row (same channel the FailGuard verdict uses).
     payload_hash = _sha256_hex(_canonicalize(payload))
     decision = _post_json(
         f"{base}{_EVALUATE_PATH}",
         body={
             "capabilityId": capability_id,
             "actor": {"id": who, "role": "operator"},
-            "payloadHash": payload_hash,
+            "context": {"payloadHash": payload_hash, "source": "strix-wire"},
         },
         headers=headers,
         timeout=timeout,
@@ -235,51 +331,36 @@ def governed_action(
         # Best-effort: record the failure as evidence too, but don't mask
         # the original exception.
         with contextlib.suppress(StrixError):
-            _post_json(
-                f"{base}{_EVIDENCE_PATH}",
-                body={
-                    "records": [{
-                        "capabilityId": capability_id,
-                        "actor": who,
-                        "tenantId": tenant,
-                        "payloadHash": payload_hash,
-                        "outcome": "error",
-                        "durationMs": int((time.time() - started_at) * 1000),
-                    }],
-                },
+            _post_evidence(
+                base=base,
                 headers=headers,
                 timeout=timeout,
+                capability_id=capability_id,
+                actor=who,
+                tenant_id=tenant,
+                payload_hash=payload_hash,
+                result_hash=None,
+                outcome="error",
+                duration_ms=int((time.time() - started_at) * 1000),
             )
         raise
 
     # 3. Record evidence.
     result_hash = _sha256_hex(_canonicalize(_to_jsonable(result)))
-    record = _post_json(
-        f"{base}{_EVIDENCE_PATH}",
-        body={
-            "records": [{
-                "capabilityId": capability_id,
-                "actor": who,
-                "tenantId": tenant,
-                "payload": payload,
-                "payloadHash": payload_hash,
-                "resultHash": result_hash,
-                "outcome": "ok",
-                "durationMs": int((time.time() - started_at) * 1000),
-            }],
-        },
+    evidence_id = _post_evidence(
+        base=base,
         headers=headers,
         timeout=timeout,
+        capability_id=capability_id,
+        actor=who,
+        tenant_id=tenant,
+        payload_hash=payload_hash,
+        result_hash=result_hash,
+        outcome="ok",
+        duration_ms=int((time.time() - started_at) * 1000),
+        payload=payload,
     )
-    records = record.get("records") or []
-    first = records[0] if records else {}
-    evidence_id = (
-        first.get("evidenceId") or first.get("id")
-        or record.get("evidenceId") or record.get("id")
-    )
-    if not evidence_id:
-        raise StrixError(f"evidence endpoint returned no id: {record!r}")
-    return result, str(evidence_id)
+    return result, evidence_id
 
 
 def _to_jsonable(obj: Any) -> Any:
