@@ -34,6 +34,35 @@ Everything else is read-only scanning and printing.
 
 ---
 
+## Step 0 — Preflight guard (fail-closed; STOP means stop)
+
+**Run this before ANYTHING else, including the credential/language checks.**
+strix-wire is a quickstart for codebases with NO governance. Two kinds of repo
+make wiring it a mistake, and this guard refuses by construction rather than
+relying on you to notice:
+
+```bash
+python3 "${CLAUDE_PROJECT_DIR:-.}/.claude/skills/strix-wire/preflight.py" --root . --json
+```
+
+- **Exit 0 / `verdict: OK`** — no governance or production markers. Proceed to
+  Preconditions.
+- **Exit 3 / `verdict: STOP`** — the repo is **already Strix-governed** (a
+  `governedProcedure` / Canonical Proof Flow / signed-evidence layer already
+  ships here, so the quickstart helper would be a lesser, redundant, unsigned
+  path) **or shows production markers** (live Stripe key, `.env.production`, a
+  real deploy domain — and Step 5 runs a REAL irreversible mutation).
+
+On **STOP you must halt.** Do not scan, wrap, copy the helper, or run anything.
+Show the user the `reason` and the `markers`, and explain plainly: strix-wire is
+for ungoverned scratch/sandbox repos; this looks like the wrong target. Only
+continue if the user gives **explicit, specific** sign-off (e.g. "yes, I
+understand this repo is already governed / is production, wire it anyway") — a
+bare "yes" to a generic prompt is not enough. If they cannot confirm, tell them
+to run strix-wire in a throwaway repo (`solo init --demo` or a fresh folder)
+instead. The guard fails **closed**: if `preflight.py` errors or cannot run,
+treat it as STOP, not OK.
+
 ## Preconditions
 
 Before doing anything, verify these. Stop and tell the user what's missing —
