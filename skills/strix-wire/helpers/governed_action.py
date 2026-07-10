@@ -1,21 +1,36 @@
 """Customer-side helper that turns one mutation into a recorded Strix action.
 
 This is the reference implementation copied into customer codebases by the
-``/strix-wire`` Claude Code skill. The contract is small and intentionally
-boring:
+``/strix-wire`` Claude Code skill. The contract:
 
 1. Caller hands us a ``capability_id``, the request ``payload`` (no secrets),
    and the operation to run.
-2. We ask the Strix kernel whether the action is allowed
-   (``POST /api/v1/evaluate``).
-3. If allowed, we run the operation.
-4. We POST an evidence record to ``POST /api/v1/evidence/ingest``
-   (body: ``{"records": [...]}``) and return ``(result, evidence_id)``.
+2. If no Strix account is configured (``STRIX_API_KEY`` / ``STRIX_TENANT_ID``
+   both absent), we auto-provision a short-lived sandbox credential from
+   ``POST /api/public/sandbox/provision`` — this is local mode: zero account,
+   one real, hosted, kernel-signed decision. The sandbox tenant only
+   AUTO_EXECUTEs this skill's closed set of irreversible-mutation capability
+   ids (see the strix-platform ``policy.ts`` sandbox override); every other
+   capability id still goes through the tenant's real risk gating.
+3. We ask the Strix kernel whether the action is allowed
+   (``POST /api/v1/evaluate``) and capture the returned ``decisionId``.
+4. If allowed, we run the operation.
+5. We POST an evidence record to ``POST /api/v1/evidence/ingest``
+   (body: ``{"records": [...]}``) — the existing unsigned "recorded wire
+   evidence" audit trail, unchanged.
+6. If a ``decisionId`` was returned in step 3, we close the proof loop with
+   ``POST /api/v1/decisions/{decisionId}/receipt``, which Ed25519-signs the
+   decision and returns a genuinely verifiable ``evidenceId`` (== decisionId)
+   + ``proofUrl``. This is what makes the skill's final output line a real
+   ``Status: VERIFIED``, not an unsigned record (INSTALL-1). A failure at
+   this step degrades gracefully — the mutation already succeeded and is
+   never undone for want of a receipt; the caller just gets
+   ``signed_evidence_id=None`` / ``verify_command=None`` instead of a crash.
 
-Evidence identity: the ingest endpoint's response carries batch counters
-(``{ingested, skipped, quarantined, ...}``), NOT per-record ids — so this
-helper GENERATES the ``evidence_id`` client-side (UUID v4), sends it inside
-the record, and returns that same id after confirming the batch was
+Evidence identity (step 5): the ingest endpoint's response carries batch
+counters (``{ingested, skipped, quarantined, ...}``), NOT per-record ids —
+so this helper GENERATES the ``evidence_id`` client-side (UUID v4), sends it
+inside the record, and returns that same id after confirming the batch was
 accepted. The record's dedup identity server-side is
 ``(tenantId, evidenceHash)``; we bind the generated ``evidence_id`` into the
 hashed material so every execution produces a distinct evidence row
@@ -32,8 +47,9 @@ helper has to fit in one file the customer can audit.
 
 Environment:
 
-- ``STRIX_API_KEY``    — required.
-- ``STRIX_TENANT_ID``  — required.
+- ``STRIX_API_KEY``    — optional. When absent (with ``STRIX_TENANT_ID``),
+  local mode auto-provisions a sandbox credential instead of failing.
+- ``STRIX_TENANT_ID``  — optional, same fallback as above.
 - ``STRIX_API_URL``    — optional, defaults to ``https://www.strixgov.com``.
 - ``STRIX_ACTOR``      — optional, identifies who ran the action.
 """
@@ -45,16 +61,18 @@ import hashlib
 import json
 import os
 import time
+import urllib.parse
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
 
 _DEFAULT_URL = "https://www.strixgov.com"
 _EVALUATE_PATH = "/api/v1/evaluate"
 _EVIDENCE_PATH = "/api/v1/evidence/ingest"
+_SANDBOX_PROVISION_PATH = "/api/public/sandbox/provision"
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +94,51 @@ class StrixApprovalRequired(StrixError):
 
 class StrixUnreachable(StrixError):
     """The kernel could not be reached; we will not silently allow."""
+
+
+# ---------------------------------------------------------------------------
+# Result
+# ---------------------------------------------------------------------------
+
+
+class GovernedActionResult(tuple, Generic[T]):
+    """Return shape of :func:`governed_action`.
+
+    Backward-compatible ``tuple`` subclass: ``result, evidence_id =
+    governed_action(...)`` (2-tuple unpacking — the pre-local-mode contract
+    used throughout this repo's wrap templates and the ``strix-personal``
+    patcher's generated code) continues to work unchanged, because the
+    underlying tuple contents are exactly ``(result, evidence_id)``. The
+    local-mode proof-closing fields are additive, exposed as named
+    attributes only (not part of the 2-tuple), so nothing that unpacks the
+    old shape breaks.
+
+    ``decision_id`` / ``signed_evidence_id`` / ``proof_url`` /
+    ``verify_command`` are ``None`` when the evaluate response carried no
+    ``decisionId`` (an older backend, or a non-fatal decision-lifecycle
+    hiccup the evaluate route itself warns about) or when the receipt POST
+    failed — the mutation still ran and ``result`` / ``evidence_id`` are
+    always populated. Never fabricate these fields when the receipt call
+    didn't actually succeed (PROOF-1).
+    """
+
+    def __new__(
+        cls,
+        result: T,
+        evidence_id: str,
+        decision_id: str | None,
+        signed_evidence_id: str | None,
+        proof_url: str | None,
+        verify_command: str | None,
+    ) -> GovernedActionResult[T]:
+        obj = super().__new__(cls, (result, evidence_id))
+        obj.result = result
+        obj.evidence_id = evidence_id
+        obj.decision_id = decision_id
+        obj.signed_evidence_id = signed_evidence_id
+        obj.proof_url = proof_url
+        obj.verify_command = verify_command
+        return obj
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +220,36 @@ def _post_json(url: str, body: dict, headers: dict, timeout: float = 5.0) -> dic
         return json.loads(text) if text else {}
     except json.JSONDecodeError:
         raise StrixUnreachable(f"strix returned non-JSON: {_scrub(text[:200])}") from None
+
+
+# ---------------------------------------------------------------------------
+# Local-mode sandbox bootstrap — POST /api/public/sandbox/provision
+# ---------------------------------------------------------------------------
+
+
+def _provision_sandbox_credentials(base: str, timeout: float) -> tuple[str, str]:
+    """Bootstrap a short-lived sandbox key with zero Strix account.
+
+    Public, unauthenticated endpoint — no headers required. Returns
+    ``(api_key, tenant_id)``. Raises ``StrixError`` if provisioning itself
+    fails (rate-limited, or the endpoint returned no credentials) — this is
+    the one case local-mode strix-wire cannot proceed past without a real
+    account.
+    """
+    resp = _post_json(
+        f"{base}{_SANDBOX_PROVISION_PATH}",
+        body={},
+        headers={},
+        timeout=timeout,
+    )
+    api_key = resp.get("apiKey")
+    tenant_id = resp.get("tenantId")
+    if not api_key or not tenant_id:
+        raise StrixError(
+            "sandbox auto-provisioning returned no credentials — set "
+            "STRIX_API_KEY and STRIX_TENANT_ID explicitly, or retry shortly."
+        )
+    return api_key, tenant_id
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +337,32 @@ def _post_evidence(
 
 
 # ---------------------------------------------------------------------------
+# Receipt — POST /api/v1/decisions/{decisionId}/receipt (closes the proof loop)
+# ---------------------------------------------------------------------------
+
+
+def _post_receipt(
+    *,
+    base: str,
+    headers: dict,
+    timeout: float,
+    decision_id: str,
+    success: bool,
+    result: Any = None,
+) -> dict:
+    body: dict[str, Any] = {"success": success}
+    if result is not None:
+        body["result"] = result
+    encoded_id = urllib.parse.quote(decision_id, safe="")
+    return _post_json(
+        f"{base}/api/v1/decisions/{encoded_id}/receipt",
+        body=body,
+        headers=headers,
+        timeout=timeout,
+    )
+
+
+# ---------------------------------------------------------------------------
 # The public surface
 # ---------------------------------------------------------------------------
 
@@ -258,8 +377,8 @@ def governed_action(
     tenant_id: str | None = None,
     strix_url: str | None = None,
     timeout: float = 5.0,
-) -> tuple[T, str]:
-    """Govern an irreversible mutation. Returns ``(result, evidence_id)``.
+) -> GovernedActionResult[T]:
+    """Govern an irreversible mutation.
 
     Args:
         capability_id: e.g. ``"payment.charge"``, ``"database.delete"``.
@@ -267,31 +386,37 @@ def governed_action(
         operation:     A zero-arg callable that performs the mutation.
         actor:         Who is running the action. Defaults to ``$STRIX_ACTOR``
                        or ``"solo-cli"``.
-        api_key:       Defaults to ``$STRIX_API_KEY``.
-        tenant_id:     Defaults to ``$STRIX_TENANT_ID``.
+        api_key:       Defaults to ``$STRIX_API_KEY``, else local-mode
+                       auto-provisions a sandbox credential.
+        tenant_id:     Defaults to ``$STRIX_TENANT_ID``, same fallback.
         strix_url:     Defaults to ``$STRIX_API_URL`` or the canonical host.
         timeout:       Per-request HTTP timeout in seconds.
 
     Raises:
+        StrixError:             Sandbox auto-provisioning failed (only when
+                                no credentials were configured at all).
         StrixDenied:            The kernel said no. The operation was NOT run.
         StrixApprovalRequired:  Out-of-band approval needed (token flow).
         StrixUnreachable:       Network failed. The operation was NOT run.
         Exception:              Anything the operation itself raises (after
-                                we record a failure evidence record).
+                                we record a failure evidence record and a
+                                FAILED receipt, best-effort).
     """
+    base = (strix_url or os.environ.get("STRIX_API_URL") or _DEFAULT_URL).rstrip("/")
+
     # Strip surrounding whitespace/newlines — a secret saved with a trailing
     # newline would otherwise produce an invalid (and credential-leaking)
     # Authorization header.
     key = (api_key or os.environ.get("STRIX_API_KEY") or "").strip()
     tenant = (tenant_id or os.environ.get("STRIX_TENANT_ID") or "").strip()
     if not key or not tenant:
-        raise StrixError(
-            "STRIX_API_KEY and STRIX_TENANT_ID must be set "
-            "(pass them explicitly or export them in the environment)."
-        )
-    who = actor or os.environ.get("STRIX_ACTOR", "solo-cli")
-    base = (strix_url or os.environ.get("STRIX_API_URL") or _DEFAULT_URL).rstrip("/")
+        # Local mode: no Strix account configured. Auto-provision a
+        # short-lived sandbox credential rather than failing outright — the
+        # whole point of local-mode strix-wire is that a stranger with zero
+        # account still gets a real, hosted, kernel-signed decision.
+        key, tenant = _provision_sandbox_credentials(base, timeout)
 
+    who = actor or os.environ.get("STRIX_ACTOR", "solo-cli")
     headers = {
         "Authorization": f"Bearer {key}",
         "X-Tenant-Id": tenant,
@@ -311,6 +436,7 @@ def governed_action(
         headers=headers,
         timeout=timeout,
     )
+    decision_id = decision.get("decisionId") or None
     action = (decision.get("action") or decision.get("decision") or "").lower()
     if action == "deny":
         reason = decision.get("reason") or "policy denied"
@@ -328,8 +454,8 @@ def governed_action(
     try:
         result = operation()
     except Exception:  # noqa: BLE001
-        # Best-effort: record the failure as evidence too, but don't mask
-        # the original exception.
+        # Best-effort: record the failure as evidence + a FAILED receipt too,
+        # but never mask the original exception.
         with contextlib.suppress(StrixError):
             _post_evidence(
                 base=base,
@@ -343,9 +469,18 @@ def governed_action(
                 outcome="error",
                 duration_ms=int((time.time() - started_at) * 1000),
             )
+        if decision_id:
+            with contextlib.suppress(StrixError):
+                _post_receipt(
+                    base=base,
+                    headers=headers,
+                    timeout=timeout,
+                    decision_id=decision_id,
+                    success=False,
+                )
         raise
 
-    # 3. Record evidence.
+    # 3. Record evidence (unsigned audit trail — unchanged contract).
     result_hash = _sha256_hex(_canonicalize(_to_jsonable(result)))
     evidence_id = _post_evidence(
         base=base,
@@ -360,7 +495,39 @@ def governed_action(
         duration_ms=int((time.time() - started_at) * 1000),
         payload=payload,
     )
-    return result, evidence_id
+
+    # 4. Close the proof loop: sign the decision itself (INSTALL-1). Degrades
+    #    gracefully — the mutation already succeeded and is never undone for
+    #    want of a receipt.
+    signed_evidence_id: str | None = None
+    proof_url: str | None = None
+    verify_command: str | None = None
+    if decision_id:
+        with contextlib.suppress(StrixError):
+            receipt = _post_receipt(
+                base=base,
+                headers=headers,
+                timeout=timeout,
+                decision_id=decision_id,
+                success=True,
+                result=_to_jsonable(result),
+            )
+            signed_evidence_id = receipt.get("evidenceId") or None
+            proof_url = receipt.get("proofUrl") or None
+            if signed_evidence_id:
+                # Constructed ourselves (not the route's own `verifyCommand`
+                # field) so the printed command always carries the `@latest`
+                # pin INSTALL-1 requires, independent of the route's format.
+                verify_command = f"npx @strixgov/verifier@latest {signed_evidence_id}"
+
+    return GovernedActionResult(
+        result=result,
+        evidence_id=evidence_id,
+        decision_id=decision_id,
+        signed_evidence_id=signed_evidence_id,
+        proof_url=proof_url,
+        verify_command=verify_command,
+    )
 
 
 def _to_jsonable(obj: Any) -> Any:
@@ -389,6 +556,7 @@ def _to_jsonable(obj: Any) -> Any:
 
 __all__ = [
     "governed_action",
+    "GovernedActionResult",
     "StrixError",
     "StrixDenied",
     "StrixApprovalRequired",

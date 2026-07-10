@@ -2,21 +2,38 @@
  * Customer-side helper that turns one mutation into a recorded Strix action.
  *
  * Reference implementation copied into customer codebases by the
- * `/strix-wire` Claude Code skill. The contract is small and intentionally
- * boring:
+ * `/strix-wire` Claude Code skill. The contract:
  *
  *   1. Caller hands us a `capabilityId`, the request `payload` (no secrets),
  *      and an async function that performs the mutation.
- *   2. We ask the Strix kernel whether the action is allowed
- *      (`POST /api/v1/evaluate`).
- *   3. If allowed, we run the operation.
- *   4. We POST an evidence record to `POST /api/v1/evidence/ingest`
- *      (body: `{ records: [...] }`) and return `{ result, evidenceId }`.
+ *   2. If no Strix account is configured (`STRIX_API_KEY` /
+ *      `STRIX_TENANT_ID` both absent), we auto-provision a short-lived
+ *      sandbox credential from `POST /api/public/sandbox/provision` — local
+ *      mode: zero account, one real, hosted, kernel-signed decision. The
+ *      sandbox tenant only AUTO_EXECUTEs this skill's closed set of
+ *      irreversible-mutation capability ids (see the strix-platform
+ *      `policy.ts` sandbox override); every other capability id still goes
+ *      through the tenant's real risk gating.
+ *   3. We ask the Strix kernel whether the action is allowed
+ *      (`POST /api/v1/evaluate`) and capture the returned `decisionId`.
+ *   4. If allowed, we run the operation.
+ *   5. We POST an evidence record to `POST /api/v1/evidence/ingest`
+ *      (body: `{ records: [...] }`) — the existing unsigned "recorded wire
+ *      evidence" audit trail, unchanged.
+ *   6. If a `decisionId` was returned in step 3, we close the proof loop
+ *      with `POST /api/v1/decisions/{decisionId}/receipt`, which
+ *      Ed25519-signs the decision and returns a genuinely verifiable
+ *      `evidenceId` (== decisionId) + `proofUrl`. This is what makes the
+ *      skill's final output line a real `Status: VERIFIED`, not an unsigned
+ *      record (INSTALL-1). A failure at this step degrades gracefully — the
+ *      mutation already succeeded and is never undone for want of a
+ *      receipt; the caller just gets `signedEvidenceId: null` /
+ *      `verifyCommand: null` instead of a thrown error.
  *
- * Evidence identity: the ingest endpoint's response carries batch counters
- * (`{ ingested, skipped, quarantined, ... }`), NOT per-record ids — so this
- * helper GENERATES the `evidenceId` client-side (UUID v4), sends it inside
- * the record, and returns that same id after confirming the batch was
+ * Evidence identity (step 5): the ingest endpoint's response carries batch
+ * counters (`{ ingested, skipped, quarantined, ... }`), NOT per-record ids —
+ * so this helper GENERATES the `evidenceId` client-side (UUID v4), sends it
+ * inside the record, and returns that same id after confirming the batch was
  * accepted. The record's dedup identity server-side is
  * `(tenantId, evidenceHash)`; we bind the generated `evidenceId` into the
  * hashed material so every execution produces a distinct evidence row
@@ -30,8 +47,10 @@
  * in Node 18+ and any modern browser/edge runtime.
  *
  * Environment:
- *   STRIX_API_KEY    — required
- *   STRIX_TENANT_ID  — required
+ *   STRIX_API_KEY    — optional. When absent (with STRIX_TENANT_ID), local
+ *                       mode auto-provisions a sandbox credential instead
+ *                       of throwing.
+ *   STRIX_TENANT_ID  — optional, same fallback as above.
  *   STRIX_API_URL    — optional, defaults to https://www.strixgov.com
  *   STRIX_ACTOR      — optional, identifies who ran the action
  */
@@ -39,6 +58,7 @@
 const DEFAULT_URL = "https://www.strixgov.com";
 const EVALUATE_PATH = "/api/v1/evaluate";
 const EVIDENCE_PATH = "/api/v1/evidence/ingest";
+const SANDBOX_PROVISION_PATH = "/api/public/sandbox/provision";
 
 // ──────────────────────────────────────────────────────────────────────
 // Errors
@@ -180,6 +200,35 @@ async function postJSON(
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// Local-mode sandbox bootstrap — POST /api/public/sandbox/provision
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Bootstrap a short-lived sandbox key with zero Strix account.
+ *
+ * Public, unauthenticated endpoint — no headers required. Throws
+ * `StrixError` if provisioning itself fails (rate-limited, or the endpoint
+ * returned no credentials) — this is the one case local-mode strix-wire
+ * cannot proceed past without a real account.
+ */
+async function provisionSandboxCredentials(
+  base: string,
+  timeout: number,
+  scrub: (text: string) => string,
+): Promise<{ apiKey: string; tenantId: string }> {
+  const resp = await postJSON(`${base}${SANDBOX_PROVISION_PATH}`, {}, {}, timeout, scrub);
+  const apiKey = typeof resp.apiKey === "string" ? resp.apiKey : "";
+  const tenantId = typeof resp.tenantId === "string" ? resp.tenantId : "";
+  if (!apiKey || !tenantId) {
+    throw new StrixError(
+      "sandbox auto-provisioning returned no credentials — set " +
+        "STRIX_API_KEY and STRIX_TENANT_ID explicitly, or retry shortly.",
+    );
+  }
+  return { apiKey, tenantId };
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Evidence envelope — matches the /api/v1/evidence/ingest IngestRecord
 // ──────────────────────────────────────────────────────────────────────
 
@@ -257,6 +306,31 @@ async function postEvidence(p: EvidenceParams): Promise<string> {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// Receipt — POST /api/v1/decisions/{decisionId}/receipt (closes the proof loop)
+// ──────────────────────────────────────────────────────────────────────
+
+async function postReceipt(
+  base: string,
+  headers: Record<string, string>,
+  timeout: number,
+  scrub: (text: string) => string,
+  decisionId: string,
+  success: boolean,
+  result?: unknown,
+): Promise<Record<string, unknown>> {
+  const body: Record<string, unknown> = { success };
+  if (result !== undefined) body.result = result;
+  const encodedId = encodeURIComponent(decisionId);
+  return postJSON(
+    `${base}/api/v1/decisions/${encodedId}/receipt`,
+    body,
+    headers,
+    timeout,
+    scrub,
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Public surface
 // ──────────────────────────────────────────────────────────────────────
 
@@ -267,9 +341,9 @@ export interface GovernedActionInput {
   payload: Record<string, unknown>;
   /** Who's running this. Defaults to `process.env.STRIX_ACTOR` or `"solo-cli"`. */
   actor?: string;
-  /** Override `process.env.STRIX_API_KEY`. */
+  /** Override `process.env.STRIX_API_KEY`. Falls back to sandbox auto-provisioning. */
   apiKey?: string;
-  /** Override `process.env.STRIX_TENANT_ID`. */
+  /** Override `process.env.STRIX_TENANT_ID`. Falls back to sandbox auto-provisioning. */
   tenantId?: string;
   /** Override `process.env.STRIX_API_URL`. Defaults to canonical host. */
   strixUrl?: string;
@@ -279,17 +353,36 @@ export interface GovernedActionInput {
 
 export interface GovernedActionResult<T> {
   result: T;
+  /** Client-generated (UUID v4) — the unsigned evidence/ingest audit row. */
   evidenceId: string;
+  /**
+   * `decisionId` / `signedEvidenceId` / `proofUrl` / `verifyCommand` are
+   * `null` when the evaluate response carried no `decisionId` (an older
+   * backend, or a non-fatal decision-lifecycle hiccup the evaluate route
+   * itself warns about) or when the receipt POST failed — the mutation
+   * still ran; these fields are never fabricated (PROOF-1).
+   */
+  decisionId: string | null;
+  /** The signed evidence id (== decisionId) once the proof loop closed. */
+  signedEvidenceId: string | null;
+  proofUrl: string | null;
+  /** Always `@latest`-pinned (INSTALL-1), constructed here — never trusts
+   *  the receipt route's own `verifyCommand` field format. */
+  verifyCommand: string | null;
 }
 
 /**
  * Govern an irreversible mutation.
  *
+ * @throws StrixError              — sandbox auto-provisioning failed (only
+ *                                    when no credentials were configured
+ *                                    at all).
  * @throws StrixDenied            — kernel refused. Operation NOT run.
  * @throws StrixApprovalRequired  — out-of-band approval needed.
  * @throws StrixUnreachable       — network failed. Operation NOT run.
  * @throws anything the operation itself throws (after a failure evidence
- *                                  record is best-effort emitted).
+ *                                  record + FAILED receipt are best-effort
+ *                                  emitted).
  */
 export async function governedAction<T>(
   input: GovernedActionInput,
@@ -298,24 +391,32 @@ export async function governedAction<T>(
   const env =
     (typeof process !== "undefined" && process.env) ||
     ({} as NodeJS.ProcessEnv);
-  // Trim surrounding whitespace/newlines — a secret saved with a trailing
-  // newline would otherwise produce an invalid (and credential-leaking)
-  // Authorization header. Mirrors governed_action.py.
-  const apiKey = (input.apiKey ?? env.STRIX_API_KEY ?? "").trim();
-  const tenantId = (input.tenantId ?? env.STRIX_TENANT_ID ?? "").trim();
-  if (!apiKey || !tenantId) {
-    throw new StrixError(
-      "STRIX_API_KEY and STRIX_TENANT_ID must be set " +
-        "(pass them explicitly or export them in the environment).",
-    );
-  }
-  const scrub = makeScrubber(apiKey);
-  const actor = input.actor ?? env.STRIX_ACTOR ?? "solo-cli";
   const base = (
     input.strixUrl ??
     env.STRIX_API_URL ??
     DEFAULT_URL
   ).replace(/\/+$/, "");
+
+  // Trim surrounding whitespace/newlines — a secret saved with a trailing
+  // newline would otherwise produce an invalid (and credential-leaking)
+  // Authorization header. Mirrors governed_action.py.
+  let apiKey = (input.apiKey ?? env.STRIX_API_KEY ?? "").trim();
+  let tenantId = (input.tenantId ?? env.STRIX_TENANT_ID ?? "").trim();
+  if (!apiKey || !tenantId) {
+    // Local mode: no Strix account configured. Auto-provision a
+    // short-lived sandbox credential rather than failing outright — the
+    // whole point of local-mode strix-wire is that a stranger with zero
+    // account still gets a real, hosted, kernel-signed decision.
+    const provisioned = await provisionSandboxCredentials(
+      base,
+      input.timeoutMs ?? 5000,
+      (text) => text,
+    );
+    apiKey = provisioned.apiKey;
+    tenantId = provisioned.tenantId;
+  }
+  const scrub = makeScrubber(apiKey);
+  const actor = input.actor ?? env.STRIX_ACTOR ?? "solo-cli";
   const headers = {
     Authorization: `Bearer ${apiKey}`,
     "X-Tenant-Id": tenantId,
@@ -337,6 +438,8 @@ export async function governedAction<T>(
     timeout,
     scrub,
   );
+  const decisionId =
+    typeof decision.decisionId === "string" ? decision.decisionId : null;
   const action = String(
     (decision.action ?? decision.decision ?? "").toString(),
   ).toLowerCase();
@@ -377,10 +480,17 @@ export async function governedAction<T>(
     } catch {
       /* swallow — original error must propagate */
     }
+    if (decisionId) {
+      try {
+        await postReceipt(base, headers, timeout, scrub, decisionId, false);
+      } catch {
+        /* swallow — original error must propagate */
+      }
+    }
     throw err;
   }
 
-  // 3. Record evidence.
+  // 3. Record evidence (unsigned audit trail — unchanged contract).
   const resultHash = await sha256Hex(canonicalize(toJSONable(result)));
   const evidenceId = await postEvidence({
     base,
@@ -396,7 +506,39 @@ export async function governedAction<T>(
     durationMs: Date.now() - t0,
     payload: input.payload,
   });
-  return { result, evidenceId };
+
+  // 4. Close the proof loop: sign the decision itself (INSTALL-1). Degrades
+  //    gracefully — the mutation already succeeded and is never undone for
+  //    want of a receipt.
+  let signedEvidenceId: string | null = null;
+  let proofUrl: string | null = null;
+  let verifyCommand: string | null = null;
+  if (decisionId) {
+    try {
+      const receipt = await postReceipt(
+        base,
+        headers,
+        timeout,
+        scrub,
+        decisionId,
+        true,
+        toJSONable(result),
+      );
+      signedEvidenceId =
+        typeof receipt.evidenceId === "string" ? receipt.evidenceId : null;
+      proofUrl = typeof receipt.proofUrl === "string" ? receipt.proofUrl : null;
+      if (signedEvidenceId) {
+        // Constructed ourselves (not the route's own `verifyCommand` field)
+        // so the printed command always carries the `@latest` pin
+        // INSTALL-1 requires, independent of the route's format.
+        verifyCommand = `npx @strixgov/verifier@latest ${signedEvidenceId}`;
+      }
+    } catch {
+      /* degrade gracefully — the mutation already succeeded */
+    }
+  }
+
+  return { result, evidenceId, decisionId, signedEvidenceId, proofUrl, verifyCommand };
 }
 
 function toJSONable(value: unknown): unknown {

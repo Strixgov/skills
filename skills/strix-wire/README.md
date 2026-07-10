@@ -1,19 +1,35 @@
 # `/strix-wire` — wire Strix governance into a customer codebase
 
 A Claude Code skill that takes a customer codebase from zero to a
-kernel-evaluated mutation with a queryable Strix evidence record in
-**about two minutes** — replacing the 15-minute manual quickstart Path A.
+kernel-evaluated mutation with a queryable, cryptographically **signed**
+Strix decision in **about two minutes** — replacing the 15-minute manual
+quickstart Path A.
 
-The record is *recorded wire evidence* (kernel decision + payload/result
-hashes under a client-generated `evidenceId`) — it is not Ed25519-signed
-at ingest, so it reports as an unsigned record on verification surfaces.
-VERIFIED is reserved for signed records.
+**Local mode: zero Strix account required.** If `STRIX_API_KEY` /
+`STRIX_TENANT_ID` aren't configured, the helper auto-provisions a
+short-lived sandbox credential from `POST /api/public/sandbox/provision`
+and proceeds — a stranger with no account still gets a real, hosted,
+kernel-evaluated decision. The sandbox tenant only auto-executes this
+skill's closed set of irreversible-mutation capability ids (see
+strix-platform's `policy.ts` sandbox override); every other capability id
+goes through real risk gating, same as a real account.
+
+The helper's final step posts a receipt
+(`POST /api/v1/decisions/{decisionId}/receipt`) that Ed25519-signs the
+decision itself, so the happy path ends in a genuinely verifiable
+`Status: VERIFIED` record — checkable by anyone with
+`npx @strixgov/verifier@latest <decisionId>`, no Strix tooling required.
+The helper also still writes the older unsigned "recorded wire evidence"
+row (kernel decision + payload/result hashes under a client-generated
+`evidenceId`) as a secondary audit trail, unchanged. If the receipt step
+itself fails, the skill degrades honestly — it never prints a verify
+command with no signed record behind it.
 
 ## What ships in this directory
 
 ```
 .claude/skills/strix-wire/
-├── SKILL.md                          # the slash-command playbook Claude executes
+├── SKILL.md                          # the playbook Claude runs; its directory name is the command
 ├── scanner.py                        # irreversible-mutation pattern scanner
 ├── helpers/
 │   ├── governed_action.py            # Python reference helper
@@ -21,10 +37,53 @@ VERIFIED is reserved for signed records.
 └── README.md                         # this file
 ```
 
-The skill is invoked by typing `/strix-wire` in Claude Code. It also
-auto-triggers when a user asks to "wire Strix" / "add Strix to this
-project" / "set up governed actions" — the trigger phrasing is in
-`SKILL.md`'s frontmatter `description`.
+## How this skill is delivered and invoked
+
+`strix-wire` is a **loose Claude Code project skill** — it lives at
+`.claude/skills/strix-wire/` inside *this* repository. In current Claude Code a
+project skill's **directory name is its command**, so an agent working with
+`solo-builder-core` checked out and opened in Claude Code invokes it by typing
+`/strix-wire`, and it also auto-triggers when the user asks to "wire Strix" /
+"add Strix to this project" / "set up governed actions" (trigger phrasing lives
+in `SKILL.md`'s frontmatter `description`).
+
+You do **not** need a separate `.claude/commands/strix-wire.md` file — a
+`.claude/skills/<name>/SKILL.md` directory and a `.claude/commands/<name>.md`
+file both register the same `/<name>` command; the skill form is just the
+richer one (it can ship supporting files like `scanner.py` and `helpers/`, and
+Claude can auto-invoke it). See
+[Claude Code → skills](https://code.claude.com/docs/en/skills.md).
+
+### `strix-wire` is NOT part of the `strix-personal` plugin
+
+The `strix-personal` **plugin** (`plugins/strix-personal/`, installed via
+`/plugin install strix-personal@strix`) is a **separate, namespaced** surface.
+It ships `/strix-personal:strix-scan`, `/strix-personal:strix-plan`,
+`/strix-personal:strix-apply`, `/strix-personal:strix-test`,
+`/strix-personal:strix-status`, and a `/strix-personal:execution-control`
+skill. It does **not** include a `strix-wire` command. If you installed the
+plugin and typed `/strix-wire`, nothing happened because the plugin never
+declared that command — its closest equivalent is `/strix-personal:strix-apply`
+(wrap one call site) plus `/strix-personal:strix-test` (verify the receipt).
+
+Bare `/strix-wire` is available **only** as the loose project skill in this
+repo; plugin commands are always namespaced `/<plugin>:<command>`.
+
+## Troubleshooting: `/strix-wire` does not appear
+
+1. **Confirm the file exists at the exact path** `.claude/skills/strix-wire/SKILL.md`
+   relative to the directory you opened in Claude Code (a project skill is
+   scoped to the repo root Claude was launched in).
+2. **Restart Claude Code after a fresh checkout.** A brand-new skill *directory*
+   is picked up on session start; if you cloned or pulled the skill mid-session,
+   restart so it registers.
+3. **Type `/` and search `strix`** to confirm the skill is listed. If you see
+   `/strix-personal:...` entries but no bare `/strix-wire`, you have the plugin
+   installed, not this repo open (see the section above).
+4. **You do not need to create a commands file.** If you want a bare
+   `/strix-wire` in a *different* repo, copy this whole `.claude/skills/strix-wire/`
+   directory (SKILL.md + `scanner.py` + `helpers/`) into that repo's
+   `.claude/skills/` and restart Claude Code.
 
 ## What the skill does
 
@@ -40,8 +99,15 @@ project" / "set up governed actions" — the trigger phrasing is in
 5. **Wraps the call** — rewrites the call site to go through
    `governed_action(...)` / `governedAction(...)`.
 6. **Runs it once** — executes the wrapped call against Strix using the
-   customer's `STRIX_API_KEY` + `STRIX_TENANT_ID`, then prints the
-   `evidenceId` plus the public verification URL.
+   customer's `STRIX_API_KEY` + `STRIX_TENANT_ID` (or an auto-provisioned
+   sandbox credential — local mode), then prints the unsigned
+   `evidenceId`, the proof-lookup URL, and — as the final output line —
+   the runnable `npx @strixgov/verifier@latest <decisionId>` command
+   (INSTALL-1: the run ends with an independent check the user executes
+   themselves). Because the helper's last step signs the decision via
+   the receipt route, this command genuinely returns `Status: VERIFIED`
+   in the happy path — it only degrades to an honest "couldn't confirm
+   the signed receipt" message if that last POST itself fails.
 
 The scanner deliberately skips test paths. Tests creating real evidence
 records would pollute the customer's audit chain.
@@ -60,10 +126,14 @@ Exit codes: `0` (candidates found), `2` (none), `3` (bad invocation).
 
 ## The `governedAction()` contract
 
-Both helpers implement the same three-step contract:
+Both helpers implement the same contract:
 
+0. **(Local mode only)** If no credentials are configured, POST
+   `/api/public/sandbox/provision` (no auth) and use the returned
+   `apiKey`/`tenantId` for every subsequent call in this run.
 1. POST `/api/v1/evaluate` with `{ capabilityId, actor, context:
-   { payloadHash, source } }`. Returns `allow` / `deny` / `escalate`.
+   { payloadHash, source } }`. Returns `allow` / `deny` / `escalate` plus
+   a `decisionId`.
 2. Run the caller's operation only on `allow`.
 3. POST `/api/v1/evidence/ingest` with `{ records: [{ tenantId,
    capabilityId, actorId, actorRole, decision, reason, source,
@@ -71,7 +141,18 @@ Both helpers implement the same three-step contract:
    carries batch counters (`{ ingested, skipped, quarantined, ... }`),
    not per-record ids — the helper generates the `evidenceId` client-side
    (UUID v4), binds it into `evidenceHash`, and confirms
-   `ingested + skipped >= 1` before reporting success.
+   `ingested + skipped >= 1` before reporting success. Unchanged from
+   before local mode — still the unsigned secondary audit trail.
+4. If step 1 returned a `decisionId`, POST
+   `/api/v1/decisions/{decisionId}/receipt` with
+   `{ success, result? }`. This Ed25519-signs the decision and returns
+   `{ evidenceId (== decisionId), proofUrl }`. The helper constructs its
+   own `npx @strixgov/verifier@latest <id>` string rather than trusting
+   the route's own `verifyCommand` field, so the printed command is
+   always `@latest`-pinned (INSTALL-1) regardless of the route's format.
+   A failure here degrades gracefully: `result` and `evidenceId` (step 3)
+   are still returned; `decisionId` / `signedEvidenceId` / `proofUrl` /
+   `verifyCommand` are `null` instead of fabricated (PROOF-1).
 
 The canonical-bytes contract from `solo_builder._canonical` is reproduced
 inside each helper so `payloadHash` / `resultHash` / `evidenceHash`
