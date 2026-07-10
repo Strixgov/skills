@@ -30,12 +30,34 @@ command with no signed record behind it.
 ```
 .claude/skills/strix-wire/
 ├── SKILL.md                          # the playbook Claude runs; its directory name is the command
+├── preflight.py                      # Step 0 fail-closed guard (refuses governed/production repos)
 ├── scanner.py                        # irreversible-mutation pattern scanner
 ├── helpers/
 │   ├── governed_action.py            # Python reference helper
 │   └── governedAction.ts             # TypeScript reference helper
 └── README.md                         # this file
 ```
+
+Everything the skill needs is bundled here — **no `pip install`** (`preflight.py`
+and `scanner.py` are stdlib-only).
+
+## Requirements (what it needs to actually run)
+
+- **Python 3** on the machine — the scanner and the Step 0 preflight guard run
+  via `python3`. Stdlib only, nothing to install.
+- **Network access to `https://www.strixgov.com`** — the governance itself runs
+  on the hosted kernel, not locally. The wrap's final step calls
+  `POST /api/public/sandbox/provision` (zero-account sandbox credential, so no
+  Strix account is required), then `/api/v1/evaluate`, `/api/v1/evidence/ingest`,
+  and `/api/v1/decisions/{id}/receipt` (the Ed25519 signature). If the network is
+  blocked the skill **degrades honestly** — it still scans and wraps, but it
+  prints the unsigned evidence id and no verify command rather than faking one.
+- **Node + npm** — only for the independent check
+  (`npx @strixgov/verifier@latest <id>`) and the TypeScript helper path.
+- **Not bundled here:** the fully-offline `solo demo adversarial` walkthrough is
+  part of the separate `solo` CLI (`pip install solo-builder-core`), not this
+  skill; and the verifier is an `npx` package. Only strix-wire itself ships in
+  the plugin.
 
 ## How this skill is delivered and invoked
 

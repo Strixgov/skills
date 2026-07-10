@@ -8,7 +8,7 @@
     {
       "name": "strix-governance",
       "source": { "source": "github", "repo": "Strixgov/skills" },
-      "version": "0.2.0",
+      "version": "0.2.1",
       "category": "security",
       "description": "Run a Strix Governance Review (SGRF v1) on a system (/runtime-governance-review), a PR (/govern-pr), or a release (/release-readiness) — and wire a first governed, recorded action (/strix-wire). The three review lenses are advisory and run anywhere; strix-wire needs a Strix runtime.",
       "tags": ["governance", "sgrf", "ai-agents", "execution-control", "code-review"]
