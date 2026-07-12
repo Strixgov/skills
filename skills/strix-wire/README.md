@@ -30,12 +30,34 @@ command with no signed record behind it.
 ```
 .claude/skills/strix-wire/
 ├── SKILL.md                          # the playbook Claude runs; its directory name is the command
+├── preflight.py                      # Step 0 fail-closed guard (refuses governed/production repos)
 ├── scanner.py                        # irreversible-mutation pattern scanner
 ├── helpers/
 │   ├── governed_action.py            # Python reference helper
 │   └── governedAction.ts             # TypeScript reference helper
 └── README.md                         # this file
 ```
+
+Everything the skill needs is bundled here — **no `pip install`** (`preflight.py`
+and `scanner.py` are stdlib-only).
+
+## Requirements (what it needs to actually run)
+
+- **Python 3** on the machine — the scanner and the Step 0 preflight guard run
+  via `python3`. Stdlib only, nothing to install.
+- **Network access to `https://www.strixgov.com`** — the governance itself runs
+  on the hosted kernel, not locally. The wrap's final step calls
+  `POST /api/public/sandbox/provision` (zero-account sandbox credential, so no
+  Strix account is required), then `/api/v1/evaluate`, `/api/v1/evidence/ingest`,
+  and `/api/v1/decisions/{id}/receipt` (the Ed25519 signature). If the network is
+  blocked the skill **degrades honestly** — it still scans and wraps, but it
+  prints the unsigned evidence id and no verify command rather than faking one.
+- **Node + npm** — only for the independent check
+  (`npx @strixgov/verifier@latest <id>`) and the TypeScript helper path.
+- **Not bundled here:** the fully-offline `solo demo adversarial` walkthrough is
+  part of the separate `solo` CLI (`pip install solo-builder-core`), not this
+  skill; and the verifier is an `npx` package. Only strix-wire itself ships in
+  the plugin.
 
 ## How this skill is delivered and invoked
 
@@ -54,20 +76,23 @@ richer one (it can ship supporting files like `scanner.py` and `helpers/`, and
 Claude can auto-invoke it). See
 [Claude Code → skills](https://code.claude.com/docs/en/skills.md).
 
-### `strix-wire` is NOT part of the `strix-personal` plugin
+### `strix-wire` in the `strix-personal` plugin
 
 The `strix-personal` **plugin** (`plugins/strix-personal/`, installed via
 `/plugin install strix-personal@strix`) is a **separate, namespaced** surface.
 It ships `/strix-personal:strix-scan`, `/strix-personal:strix-plan`,
 `/strix-personal:strix-apply`, `/strix-personal:strix-test`,
-`/strix-personal:strix-status`, and a `/strix-personal:execution-control`
-skill. It does **not** include a `strix-wire` command. If you installed the
-plugin and typed `/strix-wire`, nothing happened because the plugin never
-declared that command — its closest equivalent is `/strix-personal:strix-apply`
-(wrap one call site) plus `/strix-personal:strix-test` (verify the receipt).
+`/strix-personal:strix-status`, a `/strix-personal:execution-control` skill,
+and — as of the productization branch — a `/strix-personal:strix-wire` fast
+path. That command runs the same scan → wrap → run-once → verify flow as this
+skill, behind the same Step 0 fail-closed preflight: its
+`scripts/strix_preflight.py` is a **byte-identical vendored copy** of this
+skill's `preflight.py`, kept in lockstep by
+`scripts/sync_strix_personal_plugin.py` plus a parity test.
 
-Bare `/strix-wire` is available **only** as the loose project skill in this
-repo; plugin commands are always namespaced `/<plugin>:<command>`.
+Bare `/strix-wire` (no namespace) is available **only** as the loose project
+skill in this repo; the plugin's equivalent is always namespaced
+`/strix-personal:strix-wire`.
 
 ## Troubleshooting: `/strix-wire` does not appear
 
@@ -79,7 +104,8 @@ repo; plugin commands are always namespaced `/<plugin>:<command>`.
    restart so it registers.
 3. **Type `/` and search `strix`** to confirm the skill is listed. If you see
    `/strix-personal:...` entries but no bare `/strix-wire`, you have the plugin
-   installed, not this repo open (see the section above).
+   installed, not this repo open — use `/strix-personal:strix-wire` (same flow),
+   or open this repo in Claude Code for the bare command.
 4. **You do not need to create a commands file.** If you want a bare
    `/strix-wire` in a *different* repo, copy this whole `.claude/skills/strix-wire/`
    directory (SKILL.md + `scanner.py` + `helpers/`) into that repo's
