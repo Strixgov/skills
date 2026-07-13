@@ -1,0 +1,13 @@
+# Normalize line endings so a Windows checkout of the public Strixgov/skills
+# repo doesn't rewrite every file to CRLF on the next `git add` (the churn seen
+# during the 2026-07 manual sync). Text is stored LF in the repo; Git handles
+# the working-copy conversion. Keep scripts LF so they run under sh/python.
+* text=auto eol=lf
+
+*.py   text eol=lf
+*.mjs  text eol=lf
+*.ts   text eol=lf
+*.js   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+LICENSE text eol=lf
