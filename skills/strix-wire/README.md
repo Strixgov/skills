@@ -5,16 +5,25 @@ kernel-evaluated mutation with a queryable, cryptographically **signed**
 Strix decision in **about two minutes** — replacing the 15-minute manual
 quickstart Path A.
 
-**Local mode: zero Strix account required.** If `STRIX_API_KEY` /
-`STRIX_TENANT_ID` aren't configured, the helper auto-provisions a
-short-lived sandbox credential from `POST /api/public/sandbox/provision`
-and proceeds — a stranger with no account still gets a real, hosted,
-kernel-evaluated decision. The sandbox tenant only auto-executes this
-skill's closed set of irreversible-mutation capability ids (see
-strix-platform's `policy.ts` sandbox override); every other capability id
-goes through real risk gating, same as a real account.
+This skill ships **two zero-account modes** — they prove different things,
+and neither is a lesser version of the other:
 
-The helper's final step posts a receipt
+| | **Sandbox Mode** | **Offline Mode** |
+|---|---|---|
+| Strix account needed | No | No |
+| Network calls | Yes — every step, including signing, hits `www.strixgov.com` | **None** |
+| Who signs | The hosted Strix kernel, with a Strix-controlled key | You — a local Ed25519 key held entirely on this machine |
+| Terminal proof command | `npx @strixgov/verifier@latest <decisionId>` (INSTALL-1) | `solo strix-wire verify <path>` (LOCAL-VERIFY-1) |
+| What it proves | The hosted Strix kernel evaluated and signed this decision | A local key signed a hash-chained, tamper-evident record — a `LOCAL_MACHINE_ASSERTION`, not Strix-operated custody |
+
+**Sandbox Mode (default, hosted).** If `STRIX_API_KEY` / `STRIX_TENANT_ID`
+aren't configured, the helper auto-provisions a short-lived sandbox
+credential from `POST /api/public/sandbox/provision` and proceeds — a
+stranger with no account still gets a real, hosted, kernel-evaluated
+decision. The sandbox tenant only auto-executes this skill's closed set of
+irreversible-mutation capability ids (see strix-platform's `policy.ts`
+sandbox override); every other capability id goes through real risk
+gating, same as a real account. The helper's final step posts a receipt
 (`POST /api/v1/decisions/{decisionId}/receipt`) that Ed25519-signs the
 decision itself, so the happy path ends in a genuinely verifiable
 `Status: VERIFIED` record — checkable by anyone with
@@ -25,6 +34,18 @@ row (kernel decision + payload/result hashes under a client-generated
 itself fails, the skill degrades honestly — it never prints a verify
 command with no signed record behind it.
 
+**Offline Mode (new, zero hosted dependency).** Chosen explicitly at the
+skill's proposal step. No network call anywhere — a local Ed25519 key is
+generated on first run (`.strix/keys/`, 0600, never printed), and every
+authorized, executed mutation is signed with it and appended to a
+hash-chained local file (`.strix/evidence/receipts.jsonl`), plus exported
+as a single JSON receipt per evidence id. Independently verifiable with
+`solo strix-wire verify <path>` — no Strix account, no network, no Strix
+tooling beyond a `solo-builder-core` install. See
+[`docs/architecture/local-mode-strix-wire-v1.md`](../../../docs/architecture/local-mode-strix-wire-v1.md)
+for the full design note, receipt schema, key lifecycle, threat model, and
+exactly what this mode does and does NOT prove.
+
 ## What ships in this directory
 
 ```
@@ -33,8 +54,10 @@ command with no signed record behind it.
 ├── preflight.py                      # Step 0 fail-closed guard (refuses governed/production repos)
 ├── scanner.py                        # irreversible-mutation pattern scanner
 ├── helpers/
-│   ├── governed_action.py            # Python reference helper
-│   └── governedAction.ts             # TypeScript reference helper
+│   ├── governed_action.py            # Python reference helper — Sandbox Mode (hosted)
+│   ├── governedAction.ts             # TypeScript reference helper — Sandbox Mode (hosted)
+│   ├── governed_action_local.py      # Python reference helper — Offline Mode (zero network)
+│   └── governedAction.local.ts       # TypeScript reference helper — Offline Mode (zero network)
 └── README.md                         # this file
 ```
 
@@ -188,35 +211,67 @@ the helpers post-copy.
 
 ## Capability-ID reference
 
-The scanner emits one of these capability IDs per match:
+The scanner emits one of these capability IDs per match. The pattern
+list is GENERATED from the single-source registry at
+`src/solo_builder/pattern_catalog.py` (regenerate with
+`python -m solo_builder.pattern_catalog --generate-strix-wire`);
+`tests/test_registry_parity.py` fails CI when any of the four detection
+engines drifts from the registry.
 
-| Category           | capability_id          |
-|--------------------|------------------------|
-| payments           | `payment.charge`       |
-| db-delete          | `database.delete`      |
-| db-update          | `database.update`      |
-| db-create          | `database.create`      |
-| s3-delete          | `storage.delete`       |
-| s3-write           | `storage.write`        |
-| email-send         | `email.send`           |
-| sms-send           | `sms.send`             |
-| file-delete        | `filesystem.delete`    |
-| schema-migration   | `database.migrate`     |
+| Category              | capability_id                     | First-proof eligible |
+|-----------------------|-----------------------------------|----------------------|
+| payments              | `payment.charge`, `payment.refund`| yes |
+| db-delete             | `database.delete`                 | yes |
+| db-update             | `database.update`                 | yes |
+| db-create             | `database.create` (reserved)      | yes |
+| s3-delete             | `storage.delete`                  | yes |
+| s3-write              | `storage.write`                   | yes |
+| email-send            | `email.send`                      | yes |
+| sms-send              | `sms.send`                        | yes |
+| file-delete           | `filesystem.delete`               | yes |
+| schema-migration      | `database.migrate`                | yes |
+| infra-apply/-destroy  | `infra.apply`, `infra.destroy`    | yes |
+| iam-grant/-revoke     | `iam.grant`, `iam.revoke`         | yes |
+| flag-flip             | `flag.flip`                       | yes |
+| data-export           | `data.export`                     | yes |
+| message-publish       | `message.publish`                 | yes |
+| ai-tool-use           | `ai.tool_use`                     | yes |
+| ai-agent              | `ai.agent_run`                    | yes |
+| ai-provider           | `ai.completion`                   | no — observe-only |
+| ai-embedding          | `ai.embedding`                    | no — observe-only |
+| ai-retrieval          | `ai.retrieval`                    | no — observe-only |
 
 These match the Strix `<artifact_type>.<action>` kernel convention
 (ADR-003). The user can refine the capability later by issuing a more
 specific token via `solo kernel approve`.
 
+Observe-only AI surfaces are reported so the coverage map is honest, but
+a first proof may never bind to them (PROOF-1): a model call, embedding,
+or retrieval is observability, not an irreversible side effect. The two
+consequential AI surfaces — `ai.agent_run` and `ai.tool_use` — rank
+FIRST in scanner output: on an AI-native codebase the agent loop or LLM
+tool dispatch is the wrap that matters, not the incidental Stripe call.
+
 ## Testing the helpers
 
 ```bash
 pytest tests/test_strix_wire_scanner.py tests/test_strix_wire_governed_action.py
+# Offline Mode — key manager, receipt schema/verifier, orchestration engine, CLI
+pytest tests/test_strix_wire_local_key.py tests/test_strix_wire_local_receipt.py \
+       tests/test_strix_wire_local.py tests/test_commands_strix_wire.py
 ```
 
 The scanner tests assert pattern coverage + test-path skipping. The
-helper tests assert canonical bytes match the `_canonical` module
-byte-for-byte, the evaluate→run→evidence sequence is correct, and denied
-actions never run the operation.
+Sandbox Mode helper tests assert canonical bytes match the `_canonical`
+module byte-for-byte, the evaluate→run→evidence sequence is correct, and
+denied actions never run the operation. The Offline Mode test suite
+additionally covers hash/chain/signature tamper detection (one test per
+signed field), key rotation + historical verification, corrupt/missing/
+mismatched key files, and a policy-deny/approval-required bypass check.
+`governed_action_local.py` and `governedAction.local.ts` are a genuine
+cross-language conformance pair — a receipt minted by either verifies
+against the other (exercised manually; see
+`docs/architecture/local-mode-strix-wire-v1.md` "Verification contract").
 
 ## Out of scope
 

@@ -1,6 +1,6 @@
 {
   "name": "strix-governance",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "description": "SGRF v1 governance-review skills for Claude Code — the system, change, and release lenses, plus strix-wire to wire a first governed action. Advisory by default; runtime-aware when a Strix runtime is present.",
   "author": { "name": "Strix", "url": "https://www.strixgov.com" },
   "homepage": "https://www.strixgov.com",
