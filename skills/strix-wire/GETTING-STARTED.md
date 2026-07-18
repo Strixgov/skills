@@ -32,11 +32,21 @@ npx @strixgov/verifier@latest 5686    # a real Strix record → Status: VERIFIED
 
 ## Step 2 — install the skill in Claude Code
 
-Adds strix-wire plus the three governance-review lenses. Already installed?
-Run `/plugin update strix-governance@strixgov` to pull the latest.
+Adds strix-wire plus the three governance-review lenses.
 
 ```
 /plugin marketplace add Strixgov/skills
+/plugin install strix-governance@strixgov
+```
+
+**Already installed and want the latest scanner?** `/plugin update` refreshes
+catalog metadata but does not reliably swap the plugin's files — to actually
+pull new scanner patterns (e.g. a new language or idiom), **uninstall then
+reinstall**:
+
+```
+/plugin uninstall strix-governance@strixgov
+/plugin marketplace update strixgov
 /plugin install strix-governance@strixgov
 ```
 

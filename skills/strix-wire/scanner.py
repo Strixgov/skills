@@ -87,6 +87,13 @@ PATTERNS: list[tuple[str, str, str, str, frozenset[str]]] = [
         frozenset({".js", ".jsx", ".mjs", ".ts", ".tsx"}),
     ),
     (
+        r"\bStripe::(Charge|PaymentIntent)\.create\s*\(",
+        "payments",
+        "payment.charge",
+        "high",
+        frozenset({".rb"}),
+    ),
+    (
         r"\bstripe\.Refund\.create\s*\(",
         "payments",
         "payment.refund",
@@ -99,6 +106,13 @@ PATTERNS: list[tuple[str, str, str, str, frozenset[str]]] = [
         "payment.refund",
         "high",
         frozenset({".js", ".jsx", ".mjs", ".ts", ".tsx"}),
+    ),
+    (
+        r"\bStripe::Refund\.create\s*\(",
+        "payments",
+        "payment.refund",
+        "high",
+        frozenset({".rb"}),
     ),
     (
         r"\bprisma\.\w+\.delete(Many)?\s*\(",
@@ -148,6 +162,27 @@ PATTERNS: list[tuple[str, str, str, str, frozenset[str]]] = [
         "filesystem.delete",
         "medium",
         frozenset({".js", ".jsx", ".mjs", ".ts", ".tsx"}),
+    ),
+    (
+        r"\bos\.Remove(All)?\s*\(",
+        "file-delete",
+        "filesystem.delete",
+        "medium",
+        frozenset({".go"}),
+    ),
+    (
+        r"\bFile\.(delete|unlink)\s*\(",
+        "file-delete",
+        "filesystem.delete",
+        "medium",
+        frozenset({".rb"}),
+    ),
+    (
+        r"\bFileUtils\.(rm_rf|rm_r|rm_f|rm|remove_entry|remove_dir|remove)\s*\(",
+        "file-delete",
+        "filesystem.delete",
+        "medium",
+        frozenset({".rb"}),
     ),
     (
         r"\bsendgrid\.[A-Za-z_]*[Ss]end[A-Za-z_]*\s*\(",
@@ -849,14 +884,28 @@ def scan(root: Path, limit: int = 20) -> list[Candidate]:
 def _format_human(candidates: list[Candidate]) -> str:
     if not candidates:
         return (
-            "No action-point candidates found.\n"
+            "No action-point candidates found — this is guidance, not a dead end.\n"
+            "\n"
             "Patterns checked: payments/refunds (stripe), db deletes/updates,\n"
             "raw destructive SQL, s3 deletes/writes, email/SMS sends,\n"
             "filesystem deletes, schema migrations, infra apply/destroy,\n"
             "IAM grants/revokes, feature-flag flips, bulk data exports,\n"
             "message publishes, and AI surfaces (agent runs, MCP/LLM tool\n"
             "dispatch, model calls, embeddings, retrieval).\n"
-            "If you have a specific function in mind, point me at it."
+            "\n"
+            "Languages scanned: Python, JavaScript/TypeScript, Go, Ruby.\n"
+            "\n"
+            "A miss usually means one of three things:\n"
+            "  1. This repo has no irreversible action yet (nothing to wire).\n"
+            "  2. Your action uses a library/idiom not in the pattern set\n"
+            "     above — e.g. a Go/Ruby SDK beyond the delete + Stripe\n"
+            "     idioms, or a bespoke internal client.\n"
+            "  3. The call is already wrapped with governed_action() /\n"
+            "     governedAction() (those are excluded by design).\n"
+            "\n"
+            "If you have a specific function in mind, point me at it and I\n"
+            "will wire governed_action() around it directly — the pattern\n"
+            "set is a convenience, not a requirement."
         )
     lines = []
     for i, c in enumerate(candidates, start=1):
