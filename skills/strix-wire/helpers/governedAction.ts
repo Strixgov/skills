@@ -391,9 +391,11 @@ export async function governedAction<T>(
   const env =
     (typeof process !== "undefined" && process.env) ||
     ({} as NodeJS.ProcessEnv);
+  // `||` (not `??`): an empty-but-set STRIX_API_URL falls through to the
+  // default, mirroring governed_action.py's `or` chain.
   const base = (
-    input.strixUrl ??
-    env.STRIX_API_URL ??
+    input.strixUrl ||
+    env.STRIX_API_URL ||
     DEFAULT_URL
   ).replace(/\/+$/, "");
 
@@ -416,7 +418,10 @@ export async function governedAction<T>(
     tenantId = provisioned.tenantId;
   }
   const scrub = makeScrubber(apiKey);
-  const actor = input.actor ?? env.STRIX_ACTOR ?? "solo-cli";
+  // Empty-but-set STRIX_ACTOR must behave exactly like an unset one — the
+  // kernel 400s an evaluate whose actor.id is "". Same empty-means-unset
+  // discipline as the key/tenant/url resolution above.
+  const actor = (input.actor ?? env.STRIX_ACTOR ?? "").trim() || "solo-cli";
   const headers = {
     Authorization: `Bearer ${apiKey}`,
     "X-Tenant-Id": tenantId,

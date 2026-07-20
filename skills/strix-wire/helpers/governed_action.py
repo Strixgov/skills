@@ -416,7 +416,11 @@ def governed_action(
         # account still gets a real, hosted, kernel-signed decision.
         key, tenant = _provision_sandbox_credentials(base, timeout)
 
-    who = actor or os.environ.get("STRIX_ACTOR", "solo-cli")
+    # Empty-but-set STRIX_ACTOR (e.g. `STRIX_ACTOR: ""` in a CI env block)
+    # must behave exactly like an unset one — the kernel 400s an evaluate
+    # whose actor.id is "". Same empty-means-unset discipline as the
+    # key/tenant/url resolution above.
+    who = (actor or os.environ.get("STRIX_ACTOR") or "").strip() or "solo-cli"
     headers = {
         "Authorization": f"Bearer {key}",
         "X-Tenant-Id": tenant,
