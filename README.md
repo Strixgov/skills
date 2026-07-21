@@ -60,6 +60,20 @@ Strix Governance will review the project currently open in Claude Code.
 
 ---
 
+# Tested With
+
+The public Claude Code plugin has been successfully installed and exercised in:
+
+- Claude Code CLI
+- Claude Code Desktop
+- Claude Code in VS Code
+
+The plugin reviews the local repository currently opened in Claude Code.
+
+> Validation confirms the plugin works through Claude Code. It is not available inside the standard Claude.ai web chat UI.
+
+---
+
 # What Is Included
 
 | Skill | Purpose | Description |
