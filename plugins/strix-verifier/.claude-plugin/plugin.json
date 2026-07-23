@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "strix-verifier",
+  "displayName": "Strix Verifier",
+  "version": "1.11.1",
+  "description": "Independently verify Strix governance evidence, approval artifacts, quorums, tool-gateway receipts, CT proofs, and agent-swarm runs. Ed25519 + JWKS, offline-capable, no Strix account, SDK, or API key required.",
+  "author": {
+    "name": "Strix",
+    "email": "hello@strixgov.com",
+    "url": "https://www.strixgov.com"
+  },
+  "homepage": "https://www.strixgov.com",
+  "repository": "https://github.com/Strixgov/strix",
+  "license": "MIT",
+  "keywords": [
+    "strix",
+    "governance",
+    "verification",
+    "ed25519",
+    "proof",
+    "evidence",
+    "ai-governance",
+    "audit"
+  ]
+}

@@ -173,26 +173,57 @@ point you at a specific function to wrap.
 
 ## Step 3 — Propose the wrap
 
-Before editing, show the user:
+Before editing, show the user, **in this order**:
 
+- **One plain-language sentence first**, before any jargon or diff — e.g.
+  "I found one action that can't be undone once it runs: a Stripe charge on
+  line 47. I'll add a permission check in front of it and a signed proof
+  behind it — the charge itself won't change." Never lead with
+  `capability_id` or a diff; a non-technical reader needs the "why" before
+  the "what."
 - The candidate file, line, and snippet.
 - The `capability_id` that will be sent (e.g. `payment.charge`,
-  `database.delete`, `s3.delete_object`).
+  `database.delete`, `s3.delete_object`), with a short parenthetical of what
+  it means in practice (e.g. "`payment.charge` — a charge to a customer's
+  card").
 - The diff that will be applied (just the call-site change — not the helper
-  file yet).
-- A reminder that this **runs the mutation once** at the end of the skill.
+  file yet). This is the **change preview** — the first confirmation below
+  covers exactly what is shown here, nothing more.
+- A **"Will / Will not" block** so the approval object is unambiguous:
+
+  ```
+  If approved, this wrap WILL:
+  - add a governance check in front of this ONE call site;
+  - copy one helper file into the source tree;
+  - (only after a second, separate confirmation) run the action once
+    with test-safe inputs and record the result.
+  It will NOT:
+  - modify any other candidate the scan found;
+  - touch production data, secrets, or live third-party accounts;
+  - claim the repository is governed beyond this one action.
+  ```
+
+- A reminder that a denial means the original action **never runs at all** —
+  it isn't run-then-flagged, it's checked-then-run.
+
+**One confirmation is never enough to both wrap and run.** Approving here
+authorizes the wrap (helper copy + call-site edit) only; execution gets its
+own explicit confirmation at Step 5. Never collapse approve → wrap → run
+into a single yes.
 
 Ask the user to confirm via `AskUserQuestion`. Offer four options:
-"Proceed and run it (Sandbox Mode — hosted)", "Proceed offline (no account,
-no network, local signing)", "Wrap only — don't run", "Pick a different
-candidate".
+"Approve the wrap (Sandbox Mode — hosted; I'll confirm again before
+anything runs)", "Approve the wrap offline (no account, no network, local
+signing; same second confirmation before running)", "Wrap only — don't
+run", "Pick a different candidate".
 
 If they pick a different candidate, return to Step 2 and present the next
-one. If they pick "Wrap only", skip Step 5. If they pick "Proceed offline",
-follow the **Offline Mode** path in Step 4/5 below instead of the default
-Sandbox Mode path — see "Offline Mode" for the full contract. Default to
-Sandbox Mode unless the user asks for offline explicitly, says they have no
-network access, or otherwise signals they don't want any hosted dependency.
+one. If they pick "Wrap only", skip Step 5. If they pick the offline
+option, follow the **Offline Mode** path in Step 4/5 below instead of the
+default Sandbox Mode path — see "Offline Mode" for the full contract.
+Default to Sandbox Mode unless the user asks for offline explicitly, says
+they have no network access, or otherwise signals they don't want any
+hosted dependency.
 
 ---
 
@@ -345,7 +376,17 @@ payment call when both appear.
 
 ## Step 5 — Run it once and surface the evidenceId
 
-Only run if the user picked "Proceed and run it" in Step 3.
+Only reach this step if the user approved a run-eligible wrap in Step 3
+("Wrap only" skips it entirely).
+
+**Second checkpoint — execution gets its own explicit confirmation.** The
+Step 3 approval covered the wrap; it did NOT authorize execution. Before
+running anything, show the user exactly what the run will do (the entry
+point, the test-safe inputs, and that the action fires ONCE) and ask "Run
+it now?" via `AskUserQuestion`. A "no" here leaves a wrapped-but-unrun
+codebase — that is a valid, honest terminal state ("Governance boundary
+applied; consequential action executed: No; execution evidence created:
+No"), not a failure to be worked around.
 
 Execute the wrapped call. The exact command depends on the project:
 
@@ -411,37 +452,76 @@ handed to the user to make the run look complete when it isn't.
 
 ## Step 6 — End-of-turn summary
 
-Tell the user, in four short items:
+**Format matters as much as content here — this is the moment a
+non-technical reader decides whether any of this made sense.** Lead with a
+compact visual before any prose, then explain in plain language, then give
+next steps. Never open with a wall of technical detail.
 
-1. What was wrapped (file path + capability_id + helper path).
-2. Whether the account was real or auto-provisioned (local mode) — if
-   local-mode sandbox credentials were used, say so plainly (they're
-   short-lived, scoped to this skill's capability set only, and not a
-   substitute for a real account for anything beyond this demo).
-3. **The map** — how many OTHER ungoverned action points the scan
-   surfaced while finding this one, grouped by capability family
-   (e.g. "…and 14 more ungoverned action points: 6 database, 3 ai,
-   2 messaging, …"). One wrap is the proof; the count is the reason to
-   keep going. Point at `solo govern coverage` (from
-   `solo-builder-core`) for the per-family Governance Coverage Rate and
-   a CI ratchet baseline — it is an unsigned measurement, never proof.
-4. The verify command — `npx @strixgov/verifier@latest <decisionId>` —
-   as the LAST line of output (INSTALL-1; see Step 5), OR, if the receipt
-   step degraded, the honest fallback message instead (never both, never a
-   fabricated command).
+### 6a. The visual — what was scanned and what was found
 
-Suggest one follow-up: "Run `solo kernel approve <capability_id>` to
-pre-authorize automated agents to run this in production." If local-mode
-sandbox credentials were used, also suggest signing up for a real Strix
-account so the tenant's own risk policy (not the sandbox override) governs
-future runs. Do not push a PR or commit unless the user explicitly asks —
-the wrap is staged for their review.
+Print a small, scannable summary block (adapt counts to the real run; keep
+the ASCII-table shape, it renders identically in every terminal):
+
+```
+  SCANNED     <N> files for hard-to-undo actions (payments, deletes, sends, migrations)
+  FOUND       <M> candidates total
+  WRAPPED     1 → <file>:<line>  (<capability_id>)
+  RAN         allow ✓ — the action executed for real
+  PROOF       <verify command, or the honest degraded message — see Step 5>
+```
+
+This is the "what was analyzed / what was found" visual — do not skip it,
+and do not bury it under the technical explanation.
+
+### 6b. Plain language — what this means
+
+One or two sentences, no jargon, before anything else: what got wrapped,
+what "wrapped" means in practice (the check-then-run behavior, not a code
+rewrite), and whether the account was real or an auto-provisioned sandbox
+credential (say so plainly if local-mode sandbox credentials were used —
+they're short-lived, scoped to this skill's capability set only, and not a
+substitute for a real account for anything beyond this demo).
+
+### 6c. The map
+
+How many OTHER ungoverned action points the scan surfaced while finding
+this one, grouped by capability family (e.g. "…and 14 more ungoverned
+action points: 6 database, 3 ai, 2 messaging, …"). One wrap is the proof;
+the count is the reason to keep going. Point at `solo govern coverage`
+(from `solo-builder-core`) for the per-family Governance Coverage Rate and
+a CI ratchet baseline — it is an unsigned measurement, never proof.
+
+### 6d. The proof command
+
+The verify command — `npx @strixgov/verifier@latest <decisionId>` — as the
+LAST line of output (INSTALL-1; see Step 5), OR, if the receipt step
+degraded, the honest fallback message instead (never both, never a
+fabricated command).
+
+### 6e. Next steps (how-to, not just "what happened")
+
+Give the user something concrete to do next, not just a status report:
+
+1. "Run the verify command above yourself — it's independent of this skill."
+2. "Run `/strix-wire` again to wrap the next action" (point at the map count).
+3. "Run `solo kernel approve <capability_id>` to pre-authorize automated
+   agents to run this in production."
+4. If local-mode sandbox credentials were used, suggest signing up for a
+   real Strix account so the tenant's own risk policy (not the sandbox
+   override) governs future runs.
+5. Point at [`GETTING-STARTED.md`](./GETTING-STARTED.md)'s FAQ for common
+   follow-up questions ("did this change what my code does?", "what if it's
+   denied?", "can I undo this?") rather than re-explaining them inline every
+   time.
+
+Do not push a PR or commit unless the user explicitly asks — the wrap is
+staged for their review.
 
 ---
 
 ## Offline Mode — zero account AND zero hosted dependency
 
-Chosen at Step 3 ("Proceed offline"). Everything else in this skill
+Chosen at Step 3 ("Approve the wrap offline"). Everything else in this skill
 (preflight, language detection, scanning, the proposal) is identical —
 only the wrap target, the execution, and the terminal contract differ.
 See `docs/architecture/local-mode-strix-wire-v1.md` (solo-builder-core)
@@ -474,11 +554,12 @@ this section summarizes.
 
 Same two changes as 4b (import + wrap the call expression), but call
 `governed_action_local(...)` / `governedActionLocal(...)` instead, and
-pass `approval_granted=True` / `approvalGranted: true` **only** because
-the user already confirmed "Proceed offline" at Step 3 for this specific
-run — that confirmation IS the authorization Offline Mode's policy gate
-requires for every capability this skill wraps (they are all HIGH/CRITICAL
-risk by PROOF-1 construction). Never hardcode `approval_granted=True` into
+pass `approval_granted=True` / `approvalGranted: true` **only** after the
+user has ALSO answered "Run it now?" yes at Step 5's second checkpoint for
+this specific run — that run confirmation (not the Step 3 wrap approval
+alone) IS the authorization Offline Mode's policy gate requires for every
+capability this skill wraps (they are all HIGH/CRITICAL risk by PROOF-1
+construction). Never hardcode `approval_granted=True` into
 code that will run unattended later — that would silently disable the
 approval gate for every future run. Tell the user this plainly at Step 6.
 
@@ -701,10 +782,10 @@ hosted Strix provenance — see the architecture doc's threat model).
   should be rare (the default policy only denies an explicit deny-list
   entry), but never silently pick a different capability instead.
 - **(Offline Mode) approval not granted for a HIGH/CRITICAL capability**:
-  this means Step 3's confirmation was somehow skipped — treat it as a
-  bug in the skill's own flow, not a user-facing failure mode; every
-  capability that reaches Offline Mode's wrap step already got the user's
-  explicit "Proceed offline" confirmation.
+  this means one of the two confirmations (Step 3 wrap approval or Step 5
+  run confirmation) was somehow skipped — treat it as a bug in the skill's
+  own flow, not a user-facing failure mode; every capability that reaches
+  an Offline Mode RUN already got both explicit confirmations.
 - **(Offline Mode) `cryptography` package missing, or the local key file
   is missing/corrupt/mismatched**: stop, surface the exact error (the
   helper's `StrixLocalKeyError` message is written to be shown verbatim),

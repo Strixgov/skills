@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/verify-on-stop.mjs\"",
+            "timeout": 25
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -7,11 +7,20 @@
   "plugins": [
     {
       "name": "strix-governance",
-      "source": "./",
-      "version": "0.2.5",
+      "source": { "source": "github", "repo": "Strixgov/skills" },
+      "version": "0.2.6",
       "category": "security",
       "description": "Run a Strix Governance Review (SGRF v1) on a system (/strix-governance:runtime-governance-review), a PR (/strix-governance:govern-pr), or a release (/strix-governance:release-readiness) — and wire a first governed, recorded action (/strix-governance:strix-wire). Plugin skills are namespaced /strix-governance:<skill>. The three review lenses are advisory and run anywhere; strix-wire needs a Strix runtime.",
       "tags": ["governance", "sgrf", "ai-agents", "execution-control", "code-review"]
+    },
+    {
+      "name": "strix-verifier",
+      "source": "./plugins/strix-verifier",
+      "version": "1.11.1",
+      "category": "security",
+      "description": "Independently verify Strix governance artifacts — signed evidence, approvals, quorums, agent-swarm runs, tool-gateway receipts, and CT proofs. Run the namespaced skill /strix-verifier:strix-verify or the strix_verify MCP tool; Ed25519 + JWKS, offline-capable, no Strix account. Strix is never on the trust path.",
+      "tags": ["governance", "verification", "ed25519", "proof", "ai-governance", "audit"],
+      "license": "MIT"
     }
   ]
 }

@@ -1,0 +1,47 @@
+{
+  "name": "@strixgov/verifier",
+  "version": "1.11.0",
+  "description": "Independent verification of Strix governance evidence, approval artifacts, linked attestations (with redacted-kid support), and @strixgov/tool-gateway receipts (schema v1 + v2) plus chain snapshots and v0.3-experimental connected-mode wire envelopes. Offline-capable. No Strix tooling required.",
+  "license": "MIT",
+  "bin": {
+    "strix-verify": "bin/verify.mjs"
+  },
+  "main": "./src/index.mjs",
+  "exports": {
+    ".": {
+      "import": "./src/index.mjs",
+      "default": "./src/index.mjs"
+    }
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "strix",
+    "governance",
+    "verification",
+    "ed25519",
+    "proof",
+    "evidence"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "assets/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Strixgov/strix",
+    "directory": "packages/strixgov-verifier"
+  }
+}

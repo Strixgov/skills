@@ -1,0 +1,27 @@
+#!/usr/bin/env sh
+# strix-verify — stable entry point for the bundled @strixgov/verifier.
+#
+# Resolution order (offline-first):
+#   1. The vendored, version-pinned copy shipped inside this plugin
+#      (vendor/strixgov-verifier) — no network needed to LAUNCH the verifier;
+#      network is only used to fetch the proof/JWKS unless you pass --proof/--jwks.
+#   2. Fallback to `npx @strixgov/verifier@<version>` if the vendored copy is
+#      absent or STRIX_VERIFIER_FORCE_NPX=1.
+#
+# All arguments are passed straight through and the verifier's exit code is
+# preserved verbatim (0 VERIFIED · 1 FAILED · 2 ERROR/cannot-verify), so this
+# wrapper is safe to use in scripts and CI.
+set -eu
+
+# Resolve this script's directory, then the plugin root (one level up from bin/).
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PLUGIN_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+VENDORED="$PLUGIN_ROOT/vendor/strixgov-verifier/bin/verify.mjs"
+VERSION="${STRIX_VERIFIER_VERSION:-1.11.0}"
+
+if [ "${STRIX_VERIFIER_FORCE_NPX:-0}" != "1" ] && [ -f "$VENDORED" ]; then
+  exec node "$VENDORED" "$@"
+fi
+
+exec npx -y "@strixgov/verifier@${VERSION}" "$@"

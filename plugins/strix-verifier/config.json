@@ -1,0 +1,12 @@
+{
+  "$comment": "Defaults for the strix-verifier plugin. The verifier itself defaults to https://www.strixgov.com; override proofBase/jwksBase here or per-invocation with --proof-base/--jwks-base for a custom deployment. Nothing here is a trust input — verdicts come only from Ed25519 + JWKS.",
+  "verifierPackage": "@strixgov/verifier",
+  "verifierVersion": "1.11.0",
+  "proofBase": "https://www.strixgov.com",
+  "jwksBase": "https://www.strixgov.com",
+  "sampleRecord": "5686",
+  "verifyOnStop": {
+    "enabled": false,
+    "target": "5686"
+  }
+}
