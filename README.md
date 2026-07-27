@@ -1,6 +1,6 @@
 # Strix Open — governance skills (SGRF v1)
 
-The open methodology layer of [Strix](https://www.strixgov.com), an
+The open methodology layer of [Strix Governance](https://www.strixgov.com), an
 execution-control system for AI agents. These are **Claude Code skills** that run
 the **Strix Governance Review Framework (SGRF v1)**: review how any system governs
 execution, score it on four orthogonal axes, and — when you're ready — wire a
