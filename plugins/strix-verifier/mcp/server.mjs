@@ -16,6 +16,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { networkHintFor, DEFAULT_PROOF_BASE } from "../lib/network-hint.mjs";
+import { collapseVerdict } from "../lib/verdict-collapse.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = join(__dirname, "..");
@@ -40,7 +41,7 @@ const TOOLS = [
       "Examples of args: [\"5686\"] (evidence record), [\"approval\",\"<id>\"], [\"quorum\",\"<decisionId>\"], " +
       "[\"receipt\",\"./receipt.json\"], [\"swarm\",\"<runId>\"], [\"ct\",\"inclusion\",\"<hash>\"]. " +
       "Returns the verdict, the CLI exit code (0 VERIFIED, 1 FAILED, 2 cannot-verify), and the raw JSON result. " +
-      "Verdicts are re-derived from Ed25519 + the public JWKS — Strix is never on the trust path.",
+      "Verdicts are re-derived from Ed25519 + the public JWKS by the vendored verifier, reproducible locally or offline — no Strix account.",
     inputSchema: {
       type: "object",
       properties: {
@@ -119,9 +120,11 @@ function runVerifier(cliArgs) {
     /* non-JSON output (e.g. unexpected error) */
   }
 
-  const verdict =
-    (raw && (raw.verificationStatus || raw.status || raw.verdict)) ||
-    (exitCode === 0 ? "VERIFIED" : exitCode === 1 ? "FAILED" : "ERROR");
+  // rawStatus is the vendored verifier's OWN status string, unmodified — kept
+  // separate from `verdict` (below) so the Gate-G collapse below always
+  // starts from what the verifier actually said, never a guessed fallback.
+  const rawStatus = (raw && (raw.verificationStatus || raw.status || raw.verdict)) || null;
+  const verdict = rawStatus || (exitCode === 0 ? "VERIFIED" : exitCode === 1 ? "FAILED" : "ERROR");
 
   let interpretation =
     exitCode === 0
@@ -157,10 +160,19 @@ function runVerifier(cliArgs) {
     /* hint is best-effort; never block the result */
   }
 
+  // Gate-G: collapse to the frozen 4-state public vocabulary (VERIFIED /
+  // INVALID / LEGACY_UNSIGNED / UNVERIFIABLE) via the single collapse point
+  // in lib/verdict-collapse.mjs — never computed inline here. `verdict`
+  // (the vendored verifier's native, wider status) and `exitCode` are kept
+  // unchanged alongside it: this is presentation, not a replacement verdict.
+  const collapsed = collapseVerdict({ rawStatus, processExitCode: exitCode });
+
   return {
     verdict,
     exitCode,
     interpretation,
+    verificationState: collapsed.state,
+    verificationStateReason: collapsed.reason,
     ...(networkBlock ? { networkBlock, remediation } : {}),
     raw: raw ?? (res.stdout || "").trim(),
     stderr: (res.stderr || "").trim() || undefined,

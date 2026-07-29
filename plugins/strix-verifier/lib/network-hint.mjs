@@ -126,9 +126,10 @@ export function buildRemediation({ kind, proofBase, attemptedUrl } = {}) {
     {
       title: "Use the hosted Strix Verify MCP connector",
       detail:
-        "It re-derives the same Ed25519 + JWKS verdict through Strix infrastructure, so it is NOT " +
-        "subject to this container's egress allowlist. Same trust model — Strix is still never on the " +
-        "trust path; the connector only fetches the public proof + JWKS on your behalf.",
+        "It runs the same Ed25519 + JWKS verification through Strix infrastructure, so it is NOT " +
+        "subject to this container's egress allowlist. Trust boundary: a verdict taken only from the " +
+        "connector relies on the connector's execution — for a Strix-independent verdict, export the " +
+        "proof + JWKS and verify locally or offline.",
     },
     {
       title: "Verify offline",

@@ -1,6 +1,6 @@
 ---
 name: strix-verify
-description: Independently verify a Strix governance artifact — signed evidence records, approval artifacts, approval quorums, agent-swarm runs, tool-gateway receipts/chains, signed visuals, and CT inclusion/consistency proofs. Re-derives the canonical signed bytes and checks the Ed25519 signature against the public JWKS using only standard crypto — no Strix account, SDK, or API key, and Strix is never on the trust path. Use whenever someone asks to verify, audit, or confirm the authenticity of a Strix proof, evidence id, approval, quorum, receipt, or swarm run.
+description: Independently verify a Strix governance artifact — signed evidence records, approval artifacts, approval quorums, agent-swarm runs, tool-gateway receipts/chains, signed visuals, and CT inclusion/consistency proofs. Re-derives the canonical signed bytes and checks the Ed25519 signature against the public JWKS using only standard crypto — no Strix account, SDK, or API key; the verdict can be reproduced locally or fully offline. Use whenever someone asks to verify, audit, or confirm the authenticity of a Strix proof, evidence id, approval, quorum, receipt, or swarm run.
 user-invocable: true
 ---
 
@@ -65,8 +65,10 @@ If the exit-2 cause looks like a blocked network — `Proof API fetch failed: HT
 blocked the outbound fetch. The record is fine. Surface, in order: (1) allowlist
 `www.strixgov.com` in the environment's network/egress settings (an environment/org
 admin sets this — it's the user's policy, not Strix's); (2) use the hosted **Strix
-Verify MCP connector**, which verifies through Strix infrastructure and isn't subject
-to the container's egress allowlist; (3) verify offline with `--proof`/`--jwks`.
+Verify MCP connector** (runs the same verification through Strix infrastructure,
+bypassing the container's egress allowlist — but a verdict taken only from the
+connector relies on its execution; export the proof/JWKS and verify locally for a
+Strix-independent verdict); (3) verify offline with `--proof`/`--jwks`.
 
 Re-run with `--json` if the caller wants the raw machine-readable result.
 

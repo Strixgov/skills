@@ -1,0 +1,35 @@
+{
+  "id": "rcpt-neg-07-algorithm-mismatch",
+  "category": "negative",
+  "description": "The JWKS entry under the matching kid is not an OKP/Ed25519 key (simulates a foreign/unsupported key type reaching the resolver). MUST fail closed with an explicit error, never silently coerce to a different algorithm.",
+  "kind": "receipt",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "RSA",
+        "kid": "strix-plugin-conformance-2026-07",
+        "n": "not-a-real-modulus",
+        "e": "AQAB"
+      }
+    ]
+  },
+  "receipt": {
+    "schemaVersion": "1",
+    "receiptId": "rcpt-conformance-0009",
+    "capabilityId": "governance.evaluate",
+    "action": "allow",
+    "decision": "ALLOW",
+    "risk": "MEDIUM",
+    "mode": "enforced",
+    "invocationHash": "inv0000000000000000000000000000000000000000000000000000000000000",
+    "evidenceHash": "evh1111111111111111111111111111111111111111111111111111111111111",
+    "proofChainHash": "f02795a3acfa1c05b48a03ac6f3803d664c3b65171c907cf7a51e2e63effcbcc",
+    "timestamp": "2026-07-01T00:00:00.000Z",
+    "signingKeyId": "strix-plugin-conformance-2026-07",
+    "signature": "oyo7iuJMHMAkLquxjmaRM_AaDaeBQPxaerEaxv0ASjVCkcFPmHipqqtoFRarvsnpD6AiqMEaseTeDxi_jnQyAQ"
+  },
+  "expected": {
+    "verificationStatus": "ERROR",
+    "errorIncludes": "Unexpected key type"
+  }
+}

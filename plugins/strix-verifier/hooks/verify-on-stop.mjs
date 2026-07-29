@@ -20,6 +20,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { networkHintFor } from "../lib/network-hint.mjs";
+import { collapseVerdict } from "../lib/verdict-collapse.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = join(__dirname, "..");
@@ -71,27 +72,29 @@ try {
 const res = spawnSync(cmd, args, { encoding: "utf8", timeout: 20000 });
 const code = res.status;
 
-let verdict = "ERROR";
+let rawStatus = null;
 let detail = "";
 let errorText = res.stderr || "";
 try {
   const parsed = JSON.parse(res.stdout || "{}");
-  verdict =
-    parsed.verificationStatus ||
-    parsed.status ||
-    parsed.verdict ||
-    (code === 0 ? "VERIFIED" : code === 1 ? "FAILED" : "ERROR");
+  rawStatus = parsed.verificationStatus || parsed.status || parsed.verdict || null;
   const kid = parsed.signingKeyId || parsed.record?.signingKeyId;
   detail = kid ? ` key=${kid}` : "";
   if (typeof parsed.error === "string") errorText += " " + parsed.error;
 } catch {
-  verdict = code === 0 ? "VERIFIED" : code === 1 ? "FAILED" : "ERROR";
+  /* rawStatus stays null; collapseVerdict falls back to the exit code below */
 }
+
+// Gate-G: collapse to the frozen 4-state public vocabulary via the single
+// collapse point in lib/verdict-collapse.mjs — this hook never decides
+// VERIFIED/INVALID itself. The native status is still shown alongside it.
+const collapsed = collapseVerdict({ rawStatus, processExitCode: code });
+const nativeStatus = rawStatus || (code === 0 ? "VERIFIED" : code === 1 ? "FAILED" : "ERROR");
 
 // Advisory line to stderr so it surfaces to the user without polluting the
 // hook's stdout JSON contract.
-const mark = verdict.startsWith("VERIFIED") ? "✓" : verdict === "FAILED" ? "✗" : "?";
-process.stderr.write(`[strix-verify] ${mark} ${target} → ${verdict}${detail}\n`);
+const mark = collapsed.state === "VERIFIED" ? "✓" : collapsed.state === "INVALID" ? "✗" : "?";
+process.stderr.write(`[strix-verify] ${mark} ${target} → ${collapsed.state} (native: ${nativeStatus})${detail}\n`);
 
 // If the ERROR was an outbound-network/egress block, add one advisory line: the
 // record is fine, the environment just blocked the fetch. Still advisory only —

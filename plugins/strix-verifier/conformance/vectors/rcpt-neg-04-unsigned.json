@@ -1,0 +1,39 @@
+{
+  "id": "rcpt-neg-04-unsigned",
+  "category": "negative",
+  "description": "Receipt carries no signature field at all. MUST report UNSIGNED, never VERIFIED.",
+  "kind": "receipt",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "kid": "strix-plugin-conformance-2026-01",
+        "x": "Z-KrMWjt0tvgS00rgPvLR_GFsPZAZhAo7ENtP910Qrw"
+      },
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "kid": "strix-plugin-conformance-2026-07",
+        "x": "u1ZDCc5rbp6gNcrrpFbbeC0uB5viNV4cYQEeAsRlSbQ"
+      }
+    ]
+  },
+  "receipt": {
+    "schemaVersion": "1",
+    "receiptId": "rcpt-conformance-0006",
+    "capabilityId": "governance.evaluate",
+    "action": "allow",
+    "decision": "ALLOW",
+    "risk": "MEDIUM",
+    "mode": "enforced",
+    "invocationHash": "inv0000000000000000000000000000000000000000000000000000000000000",
+    "evidenceHash": "evh1111111111111111111111111111111111111111111111111111111111111",
+    "proofChainHash": "f02795a3acfa1c05b48a03ac6f3803d664c3b65171c907cf7a51e2e63effcbcc",
+    "timestamp": "2026-07-01T00:00:00.000Z"
+  },
+  "expected": {
+    "verificationStatus": "UNSIGNED",
+    "signaturePresent": false
+  }
+}

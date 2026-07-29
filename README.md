@@ -1,6 +1,6 @@
 # Strix Open — governance skills (SGRF v1)
 
-The open methodology layer of [Strix Governance](https://www.strixgov.com), an
+The open methodology layer of [Strix](https://www.strixgov.com), an
 execution-control system for AI agents. These are **Claude Code skills** that run
 the **Strix Governance Review Framework (SGRF v1)**: review how any system governs
 execution, score it on four orthogonal axes, and — when you're ready — wire a
@@ -16,7 +16,7 @@ lenses are advisory by construction — they read and report, they never enforce
 | `/runtime-governance-review` | system | The canonical 13-section SGRF review of a project, agent, MCP server, or CI/CD pipeline + the 4-axis profile. |
 | `/govern-pr` | change | Governance-impact review of a single PR/diff — which axes does this change move, and which way. |
 | `/release-readiness` | release | Is a release shipping as a governed, recorded, revocable decision? Ends in GO / GO-WITH-CONDITIONS / NO-GO. |
-| `/strix-wire` | remediation | Wire one consequential call site through `governedAction()`: one scoped read-only analysis authorization, then separate explicit approvals for the source change and the sandbox execution (three clicks end-to-end — see [`docs/consent-architecture.md`](docs/consent-architecture.md)). The kernel evaluates the action before it runs and a signed, queryable evidence record is produced. No Strix account required (Sandbox Mode auto-provisions; Offline Mode never leaves the machine). |
+| `/strix-wire` | remediation | Wire one consequential call site through `governedAction()`: the kernel evaluates the action before it runs and a queryable evidence record is persisted (recorded wire evidence — not Ed25519-signed at ingest). **Requires a Strix runtime** (`STRIX_API_KEY` + `STRIX_TENANT_ID`). |
 
 The first three are pure-advisory and need no runtime. `strix-wire` is the bridge
 from the open advisory layer to the Strix runtime — open skill, commercial control

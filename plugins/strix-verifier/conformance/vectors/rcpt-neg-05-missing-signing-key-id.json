@@ -1,0 +1,40 @@
+{
+  "id": "rcpt-neg-05-missing-signing-key-id",
+  "category": "negative",
+  "description": "Receipt has a signature but no signingKeyId — there is no way to resolve a verifying key. MUST fail closed with an explicit error, never assume a key.",
+  "kind": "receipt",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "kid": "strix-plugin-conformance-2026-01",
+        "x": "Z-KrMWjt0tvgS00rgPvLR_GFsPZAZhAo7ENtP910Qrw"
+      },
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "kid": "strix-plugin-conformance-2026-07",
+        "x": "u1ZDCc5rbp6gNcrrpFbbeC0uB5viNV4cYQEeAsRlSbQ"
+      }
+    ]
+  },
+  "receipt": {
+    "schemaVersion": "1",
+    "receiptId": "rcpt-conformance-0007",
+    "capabilityId": "governance.evaluate",
+    "action": "allow",
+    "decision": "ALLOW",
+    "risk": "MEDIUM",
+    "mode": "enforced",
+    "invocationHash": "inv0000000000000000000000000000000000000000000000000000000000000",
+    "evidenceHash": "evh1111111111111111111111111111111111111111111111111111111111111",
+    "proofChainHash": "f02795a3acfa1c05b48a03ac6f3803d664c3b65171c907cf7a51e2e63effcbcc",
+    "timestamp": "2026-07-01T00:00:00.000Z",
+    "signature": "sTP8j2F7wLhVleNuaN7qNBP2dduboo_NPN619tTt7rtZLSw8T4fb8WHTYhPlyTOHT2rb9hzqU2zdtNoreE2wAg"
+  },
+  "expected": {
+    "verificationStatus": "ERROR",
+    "errorIncludes": "signingKeyId"
+  }
+}

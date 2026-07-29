@@ -4,9 +4,10 @@ Brings the open `@strixgov/verifier` into Claude Code as a slash command, an
 MCP server, and a Stop hook, so you can independently verify Strix governance
 artifacts without leaving your session. No Strix account, SDK, or API key — the
 verifier re-derives the signed bytes from the public proof API + JWKS and checks
-the Ed25519 signature with standard crypto. **Strix is never on the trust path,
-and nothing in this plugin decides a verdict** — every surface shells out to the
-verifier and relays exactly what it returns (including its exit code).
+the Ed25519 signature with standard crypto. **Nothing in this plugin decides a
+verdict** — every surface shells out to the verifier and relays exactly what it
+returns (including its exit code). In local and offline modes Strix is not on the
+trust path: you reproduce the verdict yourself from public proof material + keys.
 
 ## Install
 
@@ -38,10 +39,12 @@ Three ways to get a verdict, in order of least effort:
    network/egress domains and re-run. On Claude Code (web) this is set by an
    environment or organization admin in the environment's network settings —
    Strix can't set it for you, because it's *your* environment's policy.
-2. **Use the hosted Strix Verify MCP connector.** It re-derives the same
-   Ed25519 + JWKS verdict through Strix infrastructure, so it is **not** subject
-   to your container's egress allowlist. Same trust model — Strix is still never
-   on the trust path; the connector only fetches the public proof + JWKS for you.
+2. **Use the hosted Strix Verify MCP connector.** It runs the same
+   Ed25519 + JWKS verification through Strix infrastructure, so it is **not**
+   subject to your container's egress allowlist. Trust boundary: a verdict you
+   take *only* from the connector relies on the connector's execution — it is on
+   the retrieval and result-delivery path. For a verdict independent of Strix,
+   export the proof + JWKS and verify locally or offline (option 3).
 3. **Verify fully offline.** Bring the proof + JWKS in as local files and no
    network is used at all:
 
@@ -84,7 +87,7 @@ automatically. Three tools are exposed:
 - `strix_verify_record` — `{"evidenceId":"5686","proofBase":"…"}` (proofBase optional).
 - `strix_verify_swarm` — `{"swarmRunId":"<id>"}`.
 
-Each returns `{ verdict, exitCode, interpretation, raw, source }`. A FAILED or
+Each returns `{ verdict, exitCode, interpretation, verificationState, verificationStateReason, raw, source }`. `verdict`/`exitCode` are the vendored verifier's own, native output; `verificationState` collapses that to the frozen public vocabulary (`VERIFIED` / `INVALID` / `LEGACY_UNSIGNED` / `UNVERIFIABLE`, via the single collapse point in `lib/verdict-collapse.mjs`) with `verificationStateReason` explaining why. A FAILED or
 cannot-verify outcome is returned as **data**, not an MCP error — inspect
 `exitCode`/`verdict`. When a cannot-verify (exit 2) is caused by a blocked
 outbound network (egress), the result also carries `networkBlock: true` and a

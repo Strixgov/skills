@@ -1,0 +1,45 @@
+{
+  "id": "rcpt-pos-02-schema-v2-mixed-version",
+  "category": "positive",
+  "description": "schemaVersion=2 receipt (adds policyVersion/tenantId/environment) signed with the current key. Proves the vendored canonical builder's version dispatch and verification agree for the newer schema, alongside the v1 vectors above.",
+  "kind": "receipt",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "kid": "strix-plugin-conformance-2026-01",
+        "x": "Z-KrMWjt0tvgS00rgPvLR_GFsPZAZhAo7ENtP910Qrw"
+      },
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "kid": "strix-plugin-conformance-2026-07",
+        "x": "u1ZDCc5rbp6gNcrrpFbbeC0uB5viNV4cYQEeAsRlSbQ"
+      }
+    ]
+  },
+  "receipt": {
+    "schemaVersion": "2",
+    "receiptId": "rcpt-conformance-0002",
+    "capabilityId": "governance.evaluate",
+    "action": "allow",
+    "decision": "ALLOW",
+    "risk": "LOW",
+    "mode": "enforced",
+    "policyVersion": "sha256:conformance",
+    "tenantId": "conformance-tenant",
+    "environment": "test",
+    "invocationHash": "inv2222222222222222222222222222222222222222222222222222222222222",
+    "evidenceHash": "evh2222222222222222222222222222222222222222222222222222222222222",
+    "proofChainHash": "1b2a0829184beee5607b1c2d82789e2cc647d58aba7874678463359fb6b86bef",
+    "timestamp": "2026-07-02T00:00:00.000Z",
+    "signingKeyId": "strix-plugin-conformance-2026-07",
+    "signature": "puDOEtRlQInNXu0WQV7ZO_B5ZtCjqeCnW-5ttsOVnBYCCdS43v-g2pjjBLrHYbd9z4m83JmWOYYw6_SXiShZDg"
+  },
+  "expected": {
+    "verificationStatus": "VERIFIED",
+    "signatureValid": true,
+    "hashValid": true
+  }
+}

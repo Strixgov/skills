@@ -9,7 +9,8 @@ allowed-tools: Bash(npx -y @strixgov/verifier:*), Bash(npx @strixgov/verifier:*)
 Run the open, independent Strix governance verifier and report the verdict.
 `@strixgov/verifier` re-derives the canonical signed bytes from the public
 proof API + JWKS and checks the Ed25519 signature using only standard
-crypto — Strix is never on the trust path. No account, SDK, or API key.
+crypto — no account, SDK, or API key. In local and offline modes Strix is not on
+the trust path: you reproduce the verdict yourself from public proof + keys.
 
 **Arguments passed by the user:** `$ARGUMENTS`
 
@@ -50,10 +51,11 @@ not invalid* (the record is unaffected), then surface these options to the user:
 1. **Allowlist `www.strixgov.com`** in the environment's network/egress settings
    and re-run. On Claude Code (web) an environment or organization admin sets
    this — it's the user's environment policy, not something Strix controls.
-2. **Use the hosted Strix Verify MCP connector**, which re-derives the same
-   Ed25519 + JWKS verdict through Strix infrastructure and is *not* subject to
-   the container's egress allowlist (same trust model — Strix is still never on
-   the trust path).
+2. **Use the hosted Strix Verify MCP connector**, which runs the same
+   Ed25519 + JWKS verification through Strix infrastructure and is *not* subject
+   to the container's egress allowlist. A verdict taken only from the connector
+   relies on its execution; export the proof + JWKS and verify locally for a
+   Strix-independent verdict.
 3. **Verify offline** with local files: `--proof proof.json --jwks jwks.json`.
 4. For a self-hosted Strix, pass `--proof-base <url>` / `--jwks-base <url>`.
 

@@ -1,0 +1,10 @@
+{
+  "package": "@strixgov/verifier",
+  "version": "1.11.0",
+  "source": "npm",
+  "registry": "https://registry.npmjs.org/",
+  "tarballIntegrity": "sha512-q4YuYUCHxE7dLld5GDOGccozpvZE9pVwxmtnOqmhPX3CqBeS4ilAPsx2glIhkmjLvYwFOp0TGdKA4yZ6eSF8NA==",
+  "tarballShasum": "a64b5ad7c2dac2761be36853f903ce919455ed5a",
+  "vendoredTreeSha256": "d34dc122c0fe6edd1efb89735435f05cb070c93a9f484a1ee4db71e64d9c1d86",
+  "note": "Verbatim MIT-published package, vendored via scripts/vendor-verifier.mjs (never re-implemented). tarballIntegrity/tarballShasum pin the npm registry artifact; vendoredTreeSha256 is a stable digest over the extracted tree (sorted relative-path + content) that lint-strixgov-skills-release.mjs recomputes on every run — any manual edit to the vendored source fails CI."
+}

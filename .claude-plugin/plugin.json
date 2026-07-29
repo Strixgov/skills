@@ -1,7 +1,7 @@
 {
   "name": "strix-governance",
-  "version": "0.3.0",
-  "description": "SGRF v1 governance-review skills for Claude Code — the system, change, and release lenses, plus strix-wire to wire a first governed action. strix-wire asks once for read-only analysis (WIRE-CONSENT-1), then pauses only at the source-change and execution decisions. Advisory by default; runtime-aware when a Strix runtime is present.",
+  "version": "0.3.1",
+  "description": "SGRF v1 governance-review skills for Claude Code — the system, change, and release lenses, plus strix-wire to wire a first governed action. Advisory by default; runtime-aware when a Strix runtime is present.",
   "author": { "name": "Strix", "url": "https://www.strixgov.com" },
   "homepage": "https://www.strixgov.com",
   "license": "MIT",
