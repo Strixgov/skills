@@ -790,21 +790,54 @@ def _iter_source_files(root: Path) -> list[Path]:
 
 
 def scan(root: Path, limit: int = 20) -> list[Candidate]:
-    """Scan ``root`` and return candidates ranked by confidence then path."""
+    """Scan ``root`` and return candidates ranked by confidence then path.
+
+    Convenience wrapper that discovers files itself. Callers that need
+    fail-closed accounting of the walk (which files were unreadable, whether
+    the walk was truncated) should enumerate the files themselves and call
+    :func:`scan_files` — see ``analyze.py``, which must be able to report
+    ``ANALYSIS_INCOMPLETE`` rather than an under-counted "no candidates".
+    """
+    return scan_files(root, _iter_source_files(root), limit=limit)
+
+
+def scan_files(
+    root: Path,
+    files: list[Path],
+    limit: int = 20,
+    unreadable: list[str] | None = None,
+) -> list[Candidate]:
+    """Match patterns against an explicitly supplied file list.
+
+    ``unreadable`` — when a list is passed, any file that cannot be read is
+    appended to it rather than being silently dropped. A caller that supplies
+    this list is responsible for treating a non-empty result as an incomplete
+    analysis; a caller that passes ``None`` keeps the historical lenient
+    behaviour.
+    """
     candidates: list[Candidate] = []
     compiled = [
         (re.compile(pat), cat, cap, conf, exts)
         for pat, cat, cap, conf, exts in PATTERNS
     ]
 
-    for src in _iter_source_files(root):
-        rel = str(src.relative_to(root))
+    for src in files:
+        try:
+            rel = str(src.relative_to(root))
+        except ValueError:
+            # Outside the disclosed root. Never read it; never silently skip
+            # it either when the caller is accounting for coverage.
+            if unreadable is not None:
+                unreadable.append(str(src))
+            continue
         if _is_test_path(rel):
             continue
         ext = src.suffix.lower()
         try:
             text = src.read_text(encoding="utf-8", errors="replace")
         except OSError:
+            if unreadable is not None:
+                unreadable.append(rel)
             continue
         for lineno, line in enumerate(text.splitlines(), start=1):
             for regex, category, capability_id, confidence, exts in compiled:

@@ -1,0 +1,42 @@
+{
+  "id": "rcpt-pos-01-rotated-key-still-verifies",
+  "category": "positive",
+  "description": "Signed with a retired kid whose key is still present in the JWKS alongside the current key (key rotation). Must resolve and verify by exact kid match regardless of the retired key's position in the JWKS.",
+  "kind": "receipt",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "kid": "strix-plugin-conformance-2026-01",
+        "x": "Z-KrMWjt0tvgS00rgPvLR_GFsPZAZhAo7ENtP910Qrw"
+      },
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "kid": "strix-plugin-conformance-2026-07",
+        "x": "u1ZDCc5rbp6gNcrrpFbbeC0uB5viNV4cYQEeAsRlSbQ"
+      }
+    ]
+  },
+  "receipt": {
+    "schemaVersion": "1",
+    "receiptId": "rcpt-conformance-0001",
+    "capabilityId": "governance.evaluate",
+    "action": "allow",
+    "decision": "ALLOW",
+    "risk": "MEDIUM",
+    "mode": "enforced",
+    "invocationHash": "inv0000000000000000000000000000000000000000000000000000000000000",
+    "evidenceHash": "evh1111111111111111111111111111111111111111111111111111111111111",
+    "proofChainHash": "f02795a3acfa1c05b48a03ac6f3803d664c3b65171c907cf7a51e2e63effcbcc",
+    "timestamp": "2026-07-01T00:00:00.000Z",
+    "signingKeyId": "strix-plugin-conformance-2026-01",
+    "signature": "iKGlsPo3Z1xgoYPi55FT1LO2bxmhT57J4NWrcDLi9VD1G1pH5WGGCLnM5PtenruQi8FR2-7mqEwwLCajiZ0JCQ"
+  },
+  "expected": {
+    "verificationStatus": "VERIFIED",
+    "signatureValid": true,
+    "hashValid": true
+  }
+}

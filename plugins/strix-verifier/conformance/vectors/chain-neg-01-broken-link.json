@@ -1,0 +1,59 @@
+{
+  "id": "chain-neg-01-broken-link",
+  "category": "negative",
+  "description": "The 2nd receipt's proofChainHash does not reference the 1st receipt's proofChainHash (a spliced/reordered/omitted receipt). Both signatures are individually VALID — this proves link-integrity detection is independent of signature verification. MUST report chainValid=false with brokenAt the 2nd receipt's id, while both receipts individually VERIFY.",
+  "kind": "chain",
+  "jwks": {
+    "keys": [
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "kid": "strix-plugin-conformance-2026-01",
+        "x": "Z-KrMWjt0tvgS00rgPvLR_GFsPZAZhAo7ENtP910Qrw"
+      },
+      {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "kid": "strix-plugin-conformance-2026-07",
+        "x": "u1ZDCc5rbp6gNcrrpFbbeC0uB5viNV4cYQEeAsRlSbQ"
+      }
+    ]
+  },
+  "receipts": [
+    {
+      "schemaVersion": "1",
+      "receiptId": "rcpt-chain-02-a",
+      "capabilityId": "governance.evaluate",
+      "action": "allow",
+      "decision": "ALLOW",
+      "risk": "MEDIUM",
+      "mode": "enforced",
+      "invocationHash": "inv0000000000000000000000000000000000000000000000000000000000000",
+      "evidenceHash": "evhccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "proofChainHash": "e13596aab4222527b6b4a8e8cd80a05e50514edb22050bfe9965bd990bcfdbd0",
+      "timestamp": "2026-07-01T00:00:00.000Z",
+      "signingKeyId": "strix-plugin-conformance-2026-07",
+      "signature": "LdidlWr6k5wWQpct6j2LTV56i1SDj8l0Vip6j7b41FnwNHP026TLbER7kEg71TY6yif6yxrI8drefiBKAZnRCw"
+    },
+    {
+      "schemaVersion": "1",
+      "receiptId": "rcpt-chain-02-b",
+      "capabilityId": "governance.evaluate",
+      "action": "allow",
+      "decision": "ALLOW",
+      "risk": "MEDIUM",
+      "mode": "enforced",
+      "invocationHash": "inv0000000000000000000000000000000000000000000000000000000000000",
+      "evidenceHash": "evhddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "proofChainHash": "66a7ebd579534744bbe6146364cc9d98840a210fe94605c7098947f316b2433e",
+      "timestamp": "2026-07-01T00:00:00.000Z",
+      "signingKeyId": "strix-plugin-conformance-2026-07",
+      "signature": "dxfdfLqPkuDqeQzi0iZTro3TED8aJcnqnXZIuiMsPIs2Mt_22pzygiD-7y-p-K5B1ApdpGS7xYCviThbtioWCQ"
+    }
+  ],
+  "expected": {
+    "chainValid": false,
+    "brokenAt": "rcpt-chain-02-b",
+    "allVerified": true
+  }
+}

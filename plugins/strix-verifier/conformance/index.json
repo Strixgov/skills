@@ -1,0 +1,88 @@
+{
+  "schema_version": "strix_verifier_plugin_conformance_v1",
+  "description": "Gate-J golden-vector corpus for the vendored @strixgov/verifier copy bundled in the strix-verifier Claude Code plugin. Every vector is checked against the REAL vendored verifyReceipt/verifyReceiptChain — this proves the vendored copy behaves correctly, it does not re-implement or second-guess its crypto.",
+  "vector_count": {
+    "positive": 3,
+    "negative": 8,
+    "total": 11
+  },
+  "vectors": [
+    {
+      "id": "rcpt-pos-01-rotated-key-still-verifies",
+      "category": "positive",
+      "kind": "receipt",
+      "description": "Signed with a retired kid whose key is still present in the JWKS alongside the current key (key rotation). Must resolve and verify by exact kid match regardless of the retired key's position in the JWKS.",
+      "relative_path": "vectors/rcpt-pos-01-rotated-key-still-verifies.json"
+    },
+    {
+      "id": "rcpt-pos-02-schema-v2-mixed-version",
+      "category": "positive",
+      "kind": "receipt",
+      "description": "schemaVersion=2 receipt (adds policyVersion/tenantId/environment) signed with the current key. Proves the vendored canonical builder's version dispatch and verification agree for the newer schema, alongside the v1 vectors above.",
+      "relative_path": "vectors/rcpt-pos-02-schema-v2-mixed-version.json"
+    },
+    {
+      "id": "rcpt-neg-01-tampered-payload",
+      "category": "negative",
+      "kind": "receipt",
+      "description": "Signature was minted over action=allow; the shipped receipt claims action=denied. Canonical bytes no longer match the signature. MUST reject.",
+      "relative_path": "vectors/rcpt-neg-01-tampered-payload.json"
+    },
+    {
+      "id": "rcpt-neg-02-wrong-key",
+      "category": "negative",
+      "kind": "receipt",
+      "description": "A well-formed signature, but the JWKS entry under the matching kid is a foreign public key (not the one that signed). MUST reject — the key did not sign these bytes.",
+      "relative_path": "vectors/rcpt-neg-02-wrong-key.json"
+    },
+    {
+      "id": "rcpt-neg-03-key-not-found",
+      "category": "negative",
+      "kind": "receipt",
+      "description": "signingKeyId does not match any kid in the provided JWKS. MUST fail closed with an explicit key-not-found error, never a false VERIFIED.",
+      "relative_path": "vectors/rcpt-neg-03-key-not-found.json"
+    },
+    {
+      "id": "rcpt-neg-04-unsigned",
+      "category": "negative",
+      "kind": "receipt",
+      "description": "Receipt carries no signature field at all. MUST report UNSIGNED, never VERIFIED.",
+      "relative_path": "vectors/rcpt-neg-04-unsigned.json"
+    },
+    {
+      "id": "rcpt-neg-05-missing-signing-key-id",
+      "category": "negative",
+      "kind": "receipt",
+      "description": "Receipt has a signature but no signingKeyId — there is no way to resolve a verifying key. MUST fail closed with an explicit error, never assume a key.",
+      "relative_path": "vectors/rcpt-neg-05-missing-signing-key-id.json"
+    },
+    {
+      "id": "rcpt-neg-06-malformed-signature",
+      "category": "negative",
+      "kind": "receipt",
+      "description": "The signature field is not valid base64url / not a valid Ed25519 signature length. MUST fail closed (reject or error), never crash uncaught or VERIFY.",
+      "relative_path": "vectors/rcpt-neg-06-malformed-signature.json"
+    },
+    {
+      "id": "rcpt-neg-07-algorithm-mismatch",
+      "category": "negative",
+      "kind": "receipt",
+      "description": "The JWKS entry under the matching kid is not an OKP/Ed25519 key (simulates a foreign/unsupported key type reaching the resolver). MUST fail closed with an explicit error, never silently coerce to a different algorithm.",
+      "relative_path": "vectors/rcpt-neg-07-algorithm-mismatch.json"
+    },
+    {
+      "id": "chain-pos-01-valid-two-receipt-chain",
+      "category": "positive",
+      "kind": "chain",
+      "description": "A 2-receipt chain, schema v1 then v2, correctly linked via proofChainHash = sha256(prev|evidenceHash), signed with rotated keys (old then current). MUST report chainValid=true and both receipts VERIFIED.",
+      "relative_path": "vectors/chain-pos-01-valid-two-receipt-chain.json"
+    },
+    {
+      "id": "chain-neg-01-broken-link",
+      "category": "negative",
+      "kind": "chain",
+      "description": "The 2nd receipt's proofChainHash does not reference the 1st receipt's proofChainHash (a spliced/reordered/omitted receipt). Both signatures are individually VALID — this proves link-integrity detection is independent of signature verification. MUST report chainValid=false with brokenAt the 2nd receipt's id, while both receipts individually VERIFY.",
+      "relative_path": "vectors/chain-neg-01-broken-link.json"
+    }
+  ]
+}
