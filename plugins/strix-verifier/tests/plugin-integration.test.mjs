@@ -13,6 +13,25 @@ import { fileURLToPath } from "node:url";
 
 const PLUGIN_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
+// Windows cannot execute a shebang'd sh script directly (no shebang support
+// at the OS level, regardless of which shell launched this test process) —
+// bin/strix-verify.cmd is the real, separately-maintained entry point there.
+// `shell: true` is required for Node to launch a .cmd file at all on Windows.
+const IS_WIN = process.platform === "win32";
+const STRIX_VERIFY_BIN = path.join(PLUGIN_ROOT, "bin", IS_WIN ? "strix-verify.cmd" : "strix-verify");
+
+// On win32, `spawnSync(file, args, {shell: true})` joins `file` and `args`
+// into a command line by plain string concatenation — it does NOT quote
+// `file` even when it contains spaces, so a bin path under e.g. "strix
+// verify plugin\bin\strix-verify.cmd" breaks at the first space. Quote
+// ourselves and hand the shell one pre-built command-line string instead.
+function runStrixVerify(bin, args, opts = {}) {
+  if (!IS_WIN) return spawnSync(bin, args, { encoding: "utf8", timeout: 15000, ...opts });
+  const quote = (s) => (/\s/.test(s) ? `"${s}"` : s);
+  const cmdLine = [quote(bin), ...args.map(quote)].join(" ");
+  return spawnSync(cmdLine, { encoding: "utf8", timeout: 15000, shell: true, ...opts });
+}
+
 // ---------------------------------------------------------------------------
 // 1. Cold-install: marketplace -> plugin manifest -> every referenced file
 // resolves. Both the canonical (plugins/strix-verifier, staged under the
@@ -142,10 +161,7 @@ test("offline: bin/strix-verify verifies a local receipt file through the vendor
   fs.writeFileSync(receiptPath, JSON.stringify(vector.receipt));
   fs.writeFileSync(jwksPath, JSON.stringify(vector.jwks));
 
-  const res = spawnSync(path.join(PLUGIN_ROOT, "bin", "strix-verify"), ["receipt", receiptPath, "--jwks", jwksPath, "--json"], {
-    encoding: "utf8",
-    timeout: 15000,
-  });
+  const res = runStrixVerify(STRIX_VERIFY_BIN, ["receipt", receiptPath, "--jwks", jwksPath, "--json"]);
   fs.rmSync(tmp, { recursive: true, force: true });
 
   assert.equal(res.status, 0, `expected exit 0 (VERIFIED) for a valid offline receipt; stderr: ${res.stderr}`);
@@ -162,17 +178,27 @@ test("offline: bin/strix-verify verifies a local receipt file through the vendor
 test("npx fallback: STRIX_VERIFIER_FORCE_NPX=1 invokes npx with the pinned package@version", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "strix-verify-npxstub-"));
   const marker = path.join(tmp, "npx-invocation.json");
-  const stubPath = path.join(tmp, "npx");
-  fs.writeFileSync(
-    stubPath,
-    `#!/usr/bin/env node\nrequire("fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));\nprocess.exit(0);\n`,
-  );
-  fs.chmodSync(stubPath, 0o755);
 
-  const res = spawnSync(path.join(PLUGIN_ROOT, "bin", "strix-verify"), ["5686"], {
-    encoding: "utf8",
-    timeout: 15000,
-    env: { ...process.env, PATH: `${tmp}:${process.env.PATH}`, STRIX_VERIFIER_FORCE_NPX: "1" },
+  if (IS_WIN) {
+    // cmd.exe resolves a bare `npx` via PATHEXT — `npx.cmd` is what it finds.
+    // The .cmd just re-launches node so the marker-writing logic (and its
+    // argv slicing) stays identical to the POSIX stub below.
+    fs.writeFileSync(
+      path.join(tmp, "npx.js"),
+      `require("fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));\n`,
+    );
+    fs.writeFileSync(path.join(tmp, "npx.cmd"), `@echo off\r\nnode "%~dp0npx.js" %*\r\n`);
+  } else {
+    const stubPath = path.join(tmp, "npx");
+    fs.writeFileSync(
+      stubPath,
+      `#!/usr/bin/env node\nrequire("fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));\nprocess.exit(0);\n`,
+    );
+    fs.chmodSync(stubPath, 0o755);
+  }
+
+  const res = runStrixVerify(STRIX_VERIFY_BIN, ["5686"], {
+    env: { ...process.env, PATH: `${tmp}${path.delimiter}${process.env.PATH}`, STRIX_VERIFIER_FORCE_NPX: "1" },
   });
   assert.equal(res.status, 0, `stub npx should exit 0; stderr: ${res.stderr}`);
 
@@ -193,7 +219,7 @@ test("spaces in the install path do not break the bin wrapper", () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "strix verify plugin "));
   fs.cpSync(PLUGIN_ROOT, tmp, { recursive: true });
 
-  const res = spawnSync(path.join(tmp, "bin", "strix-verify"), ["--help"], { encoding: "utf8", timeout: 15000 });
+  const res = runStrixVerify(path.join(tmp, "bin", IS_WIN ? "strix-verify.cmd" : "strix-verify"), ["--help"]);
   fs.rmSync(tmp, { recursive: true, force: true });
 
   assert.equal(res.status, 0, `expected --help to exit 0 from a spaced path; stderr: ${res.stderr}`);

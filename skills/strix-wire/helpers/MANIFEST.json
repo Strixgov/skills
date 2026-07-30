@@ -1,8 +1,8 @@
 {
   "helpers": {
     "governedAction.local.ts": {
-      "bytes": 110712,
-      "sha256": "67f0eb3beac867fee3d5151371069afe0d361bdcbb28d71a2bc8c7601860e5c3",
+      "bytes": 111095,
+      "sha256": "283f4c27c98c5cd76908f26376a7c5ff0993db7a45a9dfbb76930a8bca26a8da",
       "version": "1.0.0"
     },
     "governedAction.ts": {
@@ -16,8 +16,8 @@
       "version": "1.0.0"
     },
     "governed_action_local.py": {
-      "bytes": 111587,
-      "sha256": "0758a25e549858f3e89b669dc5b81f9063ee2278de16e889e69f154d7bf016c0",
+      "bytes": 111941,
+      "sha256": "fc12c51a905d34759f884536ad8cfa0d27adfc777ecd854a72cad3dc4a144903",
       "version": "1.0.0"
     }
   },

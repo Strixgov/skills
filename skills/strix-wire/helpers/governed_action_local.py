@@ -1601,7 +1601,12 @@ def governed_action_local(
             "The protected operation was not called.",
             reliance_result,
         )
-    if raw_decision == "REQUIRE_APPROVAL" and not approval_granted:
+    # `is not True`, deliberately, NOT `not approval_granted`: truthiness would
+    # let "no", "false", "0", 1, [0] or any non-empty object satisfy the gate
+    # on a HIGH/CRITICAL irreversible action. The documented caller
+    # (approval.consume) returns a strict bool, but a gate that depends on its
+    # caller's discipline is not a gate.
+    if raw_decision == "REQUIRE_APPROVAL" and approval_granted is not True:
         raise StrixLocalApprovalRequired(f"{capability_id}: {reason} (approval not granted)")
     # --- everything above runs BEFORE operation(); nothing below may
     # --- execute unless policy cleared, every declared reliance

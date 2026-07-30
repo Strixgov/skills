@@ -1638,7 +1638,12 @@ export function governedActionLocal<T>(
       relianceResult,
     );
   }
-  if (rawDecision === "REQUIRE_APPROVAL" && !approvalGranted) {
+  // `!== true`, deliberately, NOT `!approvalGranted`: truthiness would let
+  // "no", "false", "0", 1, [] or any object satisfy the gate on a
+  // HIGH/CRITICAL irreversible action. The documented caller returns a strict
+  // boolean, but a gate that depends on its caller's discipline is not a gate.
+  // Mirrors `approval_granted is not True` in governed_action_local.py.
+  if (rawDecision === "REQUIRE_APPROVAL" && approvalGranted !== true) {
     throw new StrixLocalApprovalRequired(`${capabilityId}: ${reason} (approval not granted)`);
   }
   // --- everything above runs BEFORE operation(); nothing below may

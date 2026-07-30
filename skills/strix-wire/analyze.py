@@ -91,6 +91,60 @@ STATUS_OK = "OK"
 STATUS_STOP = "STOP"
 STATUS_INCOMPLETE = "ANALYSIS_INCOMPLETE"
 
+#: Every way coverage can be lost. A clean `status: OK` asserts that NONE of
+#: these fired — so adding a new way to under-count means adding a code here
+#: and calling `limit()`, which is what keeps "OK means we actually looked"
+#: true by construction rather than by remembering to check a boolean.
+LIMITATION_CODES = frozenset({
+    "ROOT_UNRESOLVABLE",
+    "ROOT_NOT_DIRECTORY",
+    "PREFLIGHT_FAILED",
+    "PREFLIGHT_TRUNCATED",
+    "PREFLIGHT_UNREADABLE",
+    "PREFLIGHT_ESCAPED",
+    "WALK_TRUNCATED",
+    "WALK_DEPTH_EXCEEDED",
+    "WALK_UNREADABLE_DIR",
+    "WALK_UNREADABLE_FILE",
+    "WALK_ESCAPED",
+    "WALK_FAILED",
+    "SCANNER_FAILED",
+    "SCANNER_UNREADABLE",
+    "CANDIDATES_TRUNCATED",
+    "CANDIDATE_ANALYSIS_FAILED",
+    "LANGUAGE_DETECTION_FAILED",
+    "HELPER_INTEGRITY_UNVERIFIED",
+    "READ_BOUNDARY_VIOLATION",
+})
+
+
+def _incomplete_stub(root: str, code: str, detail: str) -> dict[str, Any]:
+    """A minimal but SHAPE-COMPLETE incomplete document.
+
+    Early returns used to omit `candidates`, `selected`, `limitations` and the
+    rest, so a caller doing `doc["candidates"]` got a KeyError on exactly the
+    paths where it most needed a safe answer. Every field a consumer may read
+    is present and empty; incompleteness is expressed in the status, not by
+    absence.
+    """
+    return {
+        "schemaVersion": "strix.wire.analysis.v1",
+        "root": root,
+        "generatedAt": time.time(),
+        "status": STATUS_INCOMPLETE,
+        "analysisComplete": False,
+        "limitations": [{"code": code, "detail": detail}],
+        "incompleteReasons": [detail],
+        "preflight": {},
+        "language": {},
+        "candidates": [],
+        "selected": None,
+        "helperIntegrity": {},
+        "integrity": {},
+        "readBoundary": {},
+        "durationMs": 0,
+    }
+
 #: Ceiling on files enumerated in one analysis. Hitting it is not an error —
 #: it is a *disclosed* truncation that forces ANALYSIS_INCOMPLETE, because a
 #: truncated walk cannot honestly report "no candidates".
@@ -459,23 +513,23 @@ def analyze(
     """Run the whole read-only phase and return one result document."""
     started = time.time()
     incomplete_reasons: list[str] = []
+    limitations: list[dict[str, str]] = []
+
+    def add_limitation(code: str, detail: str) -> None:
+        """Record one coverage limitation, in both the machine-readable and
+        human forms. Every caller that could under-count goes through here so
+        no source can be added without also reaching the final status."""
+        limitations.append({"code": code, "detail": detail})
+        incomplete_reasons.append(detail)
 
     try:
         root_real = Path(os.path.realpath(str(root)))
     except OSError as exc:
-        return {
-            "schemaVersion": "strix.wire.analysis.v1",
-            "status": STATUS_INCOMPLETE,
-            "incompleteReasons": [f"root unresolvable: {exc}"],
-            "root": str(root),
-        }
+        return _incomplete_stub(str(root), "ROOT_UNRESOLVABLE", f"root unresolvable: {exc}")
     if not root_real.is_dir():
-        return {
-            "schemaVersion": "strix.wire.analysis.v1",
-            "status": STATUS_INCOMPLETE,
-            "incompleteReasons": [f"root is not a directory: {root_real}"],
-            "root": str(root_real),
-        }
+        return _incomplete_stub(
+            str(root_real), "ROOT_NOT_DIRECTORY", f"root is not a directory: {root_real}"
+        )
 
     result: dict[str, Any] = {
         "schemaVersion": "strix.wire.analysis.v1",
@@ -483,6 +537,9 @@ def analyze(
         "generatedAt": None,
         "status": STATUS_OK,
         "incompleteReasons": incomplete_reasons,
+        "limitations": limitations,
+        # Derived once, at the end, from `limitations` — never set piecemeal.
+        "analysisComplete": True,
     }
 
     # --- Phase 1: preflight (fail-closed; STOP short-circuits everything) ---
@@ -500,8 +557,38 @@ def analyze(
     result["preflight"] = pre
     if pre.get("verdict") == "STOP":
         result["status"] = STATUS_STOP
+        result["analysisComplete"] = bool(pre.get("complete", False))
         result["generatedAt"] = time.time()
+        # Shape-complete even on the STOP path (see _incomplete_stub).
+        result.setdefault("language", {})
+        result.setdefault("candidates", [])
+        result.setdefault("selected", None)
+        result.setdefault("helperIntegrity", {})
+        result.setdefault("integrity", {})
+        result.setdefault("readBoundary", {})
+        result.setdefault("durationMs", int((time.time() - started) * 1000))
         return result
+
+    # Preflight said OK — but "OK" only means it found no markers, not that it
+    # saw everything. Its coverage signals were previously computed and then
+    # never read by this layer, so a guard that gave up early still produced a
+    # clean analysis. Each one now becomes a limitation.
+    if pre.get("truncated"):
+        add_limitation(
+            "PREFLIGHT_TRUNCATED",
+            f"preflight stopped at its ceiling after {pre.get('filesScanned', '?')} "
+            "files; it did not finish examining this repository",
+        )
+    for item in pre.get("unreadable", []) or []:
+        add_limitation(
+            "PREFLIGHT_UNREADABLE",
+            f"preflight could not read {item.get('path')}: {item.get('reason')}",
+        )
+    for item in pre.get("unscannedSubtrees", []) or []:
+        add_limitation(
+            "PREFLIGHT_ESCAPED",
+            f"preflight excluded {item.get('path')}: {item.get('reason')}",
+        )
 
     # --- Phase 2: read boundary + walk ---
     boundary = ReadBoundary(str(root_real), _runtime_allowlist())
@@ -516,16 +603,16 @@ def analyze(
             walk = walk_repository(root_real, max_files=max_files)
     except Exception as exc:
         walk = WalkResult()
-        incomplete_reasons.append(f"repository walk failed: {exc}")
+        add_limitation("WALK_FAILED", f"repository walk failed: {exc}")
 
     if walk.truncated:
-        incomplete_reasons.append(f"walk truncated at the {max_files}-file ceiling; coverage partial")
+        add_limitation("WALK_TRUNCATED", f"walk truncated at the {max_files}-file ceiling; coverage partial")
     if walk.depth_exceeded:
-        incomplete_reasons.append(f"directory depth exceeded {MAX_DEPTH}; deeper paths not analyzed")
+        add_limitation("WALK_DEPTH_EXCEEDED", f"directory depth exceeded {MAX_DEPTH}; deeper paths not analyzed")
     if walk.unreadable_dirs:
-        incomplete_reasons.append(f"{len(walk.unreadable_dirs)} directory/directories unreadable")
+        add_limitation("WALK_UNREADABLE_DIR", f"{len(walk.unreadable_dirs)} directory/directories unreadable")
     if walk.unreadable_files:
-        incomplete_reasons.append(f"{len(walk.unreadable_files)} file(s) unreadable during walk")
+        add_limitation("WALK_UNREADABLE_FILE", f"{len(walk.unreadable_files)} file(s) unreadable during walk")
 
     # --- Phase 3: pattern scan ---
     unreadable_at_scan: list[str] = []
@@ -533,9 +620,9 @@ def analyze(
     try:
         candidates = scanner.scan_files(root_real, walk.files, limit=limit, unreadable=unreadable_at_scan)
     except Exception as exc:
-        incomplete_reasons.append(f"scanner failed: {exc}")
+        add_limitation("SCANNER_FAILED", f"scanner failed: {exc}")
     if unreadable_at_scan:
-        incomplete_reasons.append(f"{len(unreadable_at_scan)} file(s) unreadable during scan")
+        add_limitation("SCANNER_UNREADABLE", f"{len(unreadable_at_scan)} file(s) unreadable during scan")
 
     # --- Phase 4: per-candidate analysis ---
     rendered: list[dict[str, Any]] = []
@@ -554,14 +641,14 @@ def analyze(
                 }
             )
         except Exception as exc:
-            incomplete_reasons.append(f"candidate analysis failed: {exc}")
+            add_limitation("CANDIDATE_ANALYSIS_FAILED", f"candidate analysis failed: {exc}")
 
     # --- Phase 5: language + helper integrity ---
     try:
         language = detect_language(root_real, walk.files)
     except Exception as exc:
         language = {"primary": None, "error": str(exc)}
-        incomplete_reasons.append(f"language detection failed: {exc}")
+        add_limitation("LANGUAGE_DETECTION_FAILED", f"language detection failed: {exc}")
 
     try:
         integrity = verify_helper_integrity(helpers_dir=helpers_dir, required=required_helpers)
@@ -571,10 +658,10 @@ def analyze(
             "reason": f"HELPER_INTEGRITY_UNVERIFIED: {exc}",
         }
     if not integrity.get("verified"):
-        incomplete_reasons.append(integrity.get("reason") or "HELPER_INTEGRITY_UNVERIFIED")
+        add_limitation("HELPER_INTEGRITY_UNVERIFIED", integrity.get("reason") or "helper integrity unverified")
 
     if enforce_read_boundary and boundary.violations:
-        incomplete_reasons.append(f"{len(boundary.violations)} read(s) escaped the disclosed root")
+        add_limitation("READ_BOUNDARY_VIOLATION", f"{len(boundary.violations)} read(s) escaped the disclosed root")
 
     result["language"] = language
     result["candidates"] = rendered
@@ -600,7 +687,11 @@ def analyze(
         ),
     }
 
-    if incomplete_reasons:
+    # SINGLE derivation point. Status and completeness both come from
+    # `limitations`; no layer sets them independently, so a truncation that is
+    # recorded cannot fail to reach the verdict.
+    result["analysisComplete"] = not limitations
+    if not result["analysisComplete"]:
         result["status"] = STATUS_INCOMPLETE
 
     # A wrap target is only offered when the analysis is trustworthy AND the
@@ -622,18 +713,76 @@ def analyze(
 # ---------------------------------------------------------------------------
 
 
+# Unicode bidirectional-formatting controls. Not in the C0/C1 ranges, so the
+# categorical filter below misses them, yet they reverse rendered text — a
+# filename can display as its mirror image and hide what is really being
+# approved.
+_BIDI_CONTROLS = "‪‫‬‭‮⁦⁧⁨⁩‎‏"
+
+#: Cap on any single repo-controlled field in the operator projection. Long
+#: enough for a real path or source line, short enough that one field cannot
+#: scroll the decision surface off-screen.
+_SAFE_MAX = 160
+
+
+def _safe(value: Any) -> str:
+    """Render a repo-controlled value inert for an operator's terminal.
+
+    The operator approves a source change and an irreversible run FROM this
+    output, so anything the scanned repository controls — a snippet, a path, a
+    candidate id, a preflight marker — is untrusted input to the decision
+    surface, exactly like HTML escaping before writing to a page.
+
+    Removes, not escapes (escaping would preserve length and still allow
+    off-screen scrolling): all C0/C1 control characters including ESC, CR, LF,
+    backspace, NUL, VT and FF — which kills ANSI CSI *and* OSC sequences at the
+    source, since both begin with ESC — plus Unicode bidi overrides. The result
+    is single-line, bounded, and printable.
+
+    Evidence fidelity is unaffected: the JSON document still carries raw bytes.
+    This is only the human projection (Gate H).
+    """
+    if not isinstance(value, str):
+        value = "" if value is None else str(value)
+    cleaned = "".join(
+        ch
+        for ch in value
+        if ch not in _BIDI_CONTROLS
+        and not (ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F)
+    )
+    cleaned = cleaned.strip()
+    if len(cleaned) > _SAFE_MAX:
+        cleaned = cleaned[: _SAFE_MAX - 3] + "..."
+    return cleaned
+
+
 def _format_human(doc: dict[str, Any]) -> str:
+    # Every interpolation below that the scanned repository can influence goes
+    # through _safe(). `status` is our own enum and the counts are ints, so
+    # those are trusted; paths, snippets, ids, markers and reasons are not.
     lines: list[str] = []
     status = doc.get("status")
-    lines.append(f"Strix Wire analysis — {status}")
-    lines.append(f"root: {doc.get('root')}")
+    lines.append(f"Strix Wire analysis — {_safe(status)}")
+    lines.append(f"root: {_safe(doc.get('root'))}")
 
     if status == STATUS_STOP:
         pre = doc.get("preflight", {})
-        lines.append(f"STOP: {pre.get('reason', 'preflight refused')}")
+        lines.append(f"STOP: {_safe(pre.get('reason', 'preflight refused'))}")
         markers = pre.get("markers") or []
         for marker in markers[:10]:
-            lines.append(f"  marker: {marker}")
+            if isinstance(marker, dict):
+                label = _safe(marker.get("marker"))
+                path = _safe(marker.get("path"))
+                kind = _safe(marker.get("kind"))
+                lines.append(f"  marker: [{kind}] {label}" + (f" ({path})" if path else ""))
+            else:
+                lines.append(f"  marker: {_safe(marker)}")
+        unscanned = pre.get("unscannedSubtrees") or []
+        for item in unscanned[:10]:
+            if isinstance(item, dict):
+                lines.append(
+                    f"  NOT SCANNED: {_safe(item.get('path'))} — {_safe(item.get('reason'))}"
+                )
         lines.append("\nstrix-wire is for ungoverned, non-production repositories.")
         return "\n".join(lines)
 
@@ -643,12 +792,12 @@ def _format_human(doc: dict[str, Any]) -> str:
         lines.append(f"excluded (escaped disclosed root): {integ['excludedEscapedCount']}")
 
     lang = doc.get("language", {})
-    lines.append(f"language: {lang.get('primary') or 'undetected'}")
+    lines.append(f"language: {_safe(lang.get('primary')) or 'undetected'}")
 
     if status == STATUS_INCOMPLETE:
         lines.append("\nANALYSIS INCOMPLETE — coverage could not be established:")
         for reason in doc.get("incompleteReasons", []):
-            lines.append(f"  - {reason}")
+            lines.append(f"  - {_safe(reason)}")
         lines.append(
             "\nCandidates below (if any) are NOT a complete picture of this "
             "repository. Do not read this as 'nothing to govern'."
@@ -658,11 +807,17 @@ def _format_human(doc: dict[str, Any]) -> str:
     lines.append(f"\ncandidates: {len(cands)}")
     for cand in cands[:10]:
         flag = "*" if cand.get("first_proof_eligible") else " "
-        lines.append(f" {flag} {cand['candidateId']}  {cand['capability_id']} ({cand['confidence']})")
-        lines.append(f"     {cand['snippet'].strip()[:100]}")
+        cid = _safe(cand.get("candidateId"))
+        cap = _safe(cand.get("capability_id"))
+        conf = _safe(cand.get("confidence"))
+        lines.append(f" {flag} {cid}  {cap} ({conf})")
+        # The snippet is raw source from the scanned repo — the primary
+        # injection vector, since its whole purpose is to show repo content.
+        lines.append(f"     {_safe(cand.get('snippet'))}")
 
     selected = doc.get("selected")
-    lines.append(f"\nproposed wrap target: {selected['candidateId'] if selected else 'none'}")
+    target = _safe(selected.get("candidateId")) if selected else "none"
+    lines.append(f"\nproposed wrap target: {target}")
     if not selected and status != STATUS_OK:
         lines.append("(no target proposed while the analysis is incomplete)")
     return "\n".join(lines)

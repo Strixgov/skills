@@ -104,7 +104,7 @@ test("no file other than the collapse module hardcodes the frozen-state mapping 
     if (!fs.existsSync(full)) continue;
     const files = fs.readdirSync(full, { withFileTypes: true }).filter((e) => e.isFile());
     for (const f of files) {
-      const rel = path.join(dir, f.name);
+      const rel = path.join(dir, f.name).split(path.sep).join("/");
       if (rel.endsWith(COLLAPSE_MODULE)) continue;
       const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
       if (/"UNVERIFIABLE"/.test(src)) offenders.push(rel);
