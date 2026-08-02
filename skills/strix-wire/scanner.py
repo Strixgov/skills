@@ -679,6 +679,30 @@ FIRST_PROOF_ELIGIBLE: frozenset[str] = frozenset({
 OBSERVE_ONLY_CAPABILITIES: frozenset[str] = frozenset({
     "ai.completion", "ai.embedding", "ai.retrieval",
 })
+
+# A hit whose LINE also matches one of these DECLARES the operation
+# rather than performing it (a SQL literal compiled by db.prepare(...)
+# fires later at .run()). Reported, never auto-selected: a proof bound
+# to a declaration site attests to compilation while the real mutation
+# runs ungoverned. Per-line, not per-pattern — the same raw-SQL regex
+# also matches db.exec(...), which does execute and is often the
+# highest-blast-radius line in the file.
+DECLARATION_SITE_MARKERS: frozenset[str] = frozenset({
+    r"\.prepare(?:Statement)?\s*\(",
+    r"\bsql\.raw\s*\(",
+})
+
+# Per-pattern blast-radius signal: a match whose line carries one of ITS
+# OWN markers is SCOPED (bounded subset); absence means unscoped, the
+# broader form. A pattern absent from this map is NOT ASSESSED — which
+# ranks between the two, never as scoped. Keyed per-regex so prisma's
+# `where:` and SQL's `WHERE` cannot cross-apply.
+SCOPE_MARKERS_BY_REGEX: dict[str, tuple[str, ...]] = {
+    r"""(?i)["']\s*(?:DELETE\s+FROM|DROP\s+TABLE|TRUNCATE\s+TABLE|TRUNCATE)\s+""": (r"(?i)\bWHERE\b",),
+    r"\.destroy\s*\(\s*\{\s*where": (r"\bwhere\b",),
+    r"\bprisma\.\w+\.delete(Many)?\s*\(": (r"\bwhere\s*:",),
+    r"\bprisma\.\w+\.update(Many)?\s*\(": (r"\bwhere\s*:",),
+}
 # END GENERATED PATTERNS
 
 # Directories we never descend into.
@@ -738,6 +762,44 @@ class Candidate:
     # False for observe-only AI surfaces (ai.completion / ai.embedding
     # / ai.retrieval), which are reported but never wrapped first.
     first_proof_eligible: bool = True
+    # Blast radius, where the line can tell us: "unscoped" acts on the whole
+    # collection, "scoped" on a bounded subset. None = this pattern has no
+    # scope markers, so it was NOT ASSESSED — never read None as scoped.
+    scope: str | None = None
+
+
+_DECLARATION_MARKERS = [re.compile(m) for m in DECLARATION_SITE_MARKERS]
+
+_SCOPE_MARKERS = {
+    pat: [re.compile(m) for m in markers]
+    for pat, markers in SCOPE_MARKERS_BY_REGEX.items()
+}
+
+
+def _assess_scope(regex_pattern: str, line: str) -> str | None:
+    """"unscoped" | "scoped" | None (not assessed) for one matched line."""
+    markers = _SCOPE_MARKERS.get(regex_pattern)
+    if not markers:
+        return None
+    return "scoped" if any(m.search(line) for m in markers) else "unscoped"
+
+
+# Rank order for the blast-radius axis. "Not assessed" sits BETWEEN the two:
+# it must not outrank a known whole-collection operation, and must not be
+# demoted below a known narrow one on the strength of an absent signal.
+_SCOPE_RANK = {"unscoped": 0, None: 1, "scoped": 2}
+
+
+def _is_declaration_site(line: str) -> bool:
+    """True if this line COMPILES the operation rather than running it.
+
+    Per-line by design: the raw-SQL regex matches the literal inside
+    `db.prepare("DELETE FROM …")` (compiled now, fires later at `.run()`)
+    AND inside `db.exec("DELETE FROM …")` (runs now). Only the former
+    carries a marker, so only the former is refused as a wrap target —
+    the latter is frequently the highest-blast-radius line in the file.
+    """
+    return any(m.search(line) for m in _DECLARATION_MARKERS)
 
 
 def _candidate_tier(capability_id: str) -> int:
@@ -852,8 +914,15 @@ def scan_files(
                             category=category,
                             capability_id=capability_id,
                             confidence=confidence,
+                            scope=_assess_scope(regex.pattern, line),
                             first_proof_eligible=(
                                 capability_id in FIRST_PROOF_ELIGIBLE
+                                # A declaration site is never the wrap
+                                # target: binding a proof to the SQL
+                                # literal that db.prepare() compiles
+                                # would attest to compilation while the
+                                # real DELETE fires ungoverned at .run().
+                                and not _is_declaration_site(line)
                             ),
                         )
                     )
@@ -866,7 +935,18 @@ def scan_files(
     candidates.sort(
         key=lambda c: (
             _candidate_tier(c.capability_id),
+            # Ineligible-for-first-proof sinks within its tier, so a
+            # declaration site never heads the list either. Selection
+            # already refuses it; this keeps the display honest too.
+            not c.first_proof_eligible,
             confidence_rank.get(c.confidence, 9),
+            # Blast radius, AFTER confidence: a wide-blast-radius match that
+            # is probably a false positive is still a false positive, so
+            # match certainty stays the stronger signal. Within one
+            # confidence band this is what separates a whole-table wipe from
+            # a scoped delete — the two used to tie and fall through to
+            # first-by-path.
+            _SCOPE_RANK.get(c.scope, 1),
             c.file,
             c.line,
         )
@@ -893,9 +973,21 @@ def _format_human(candidates: list[Candidate]) -> str:
         )
     lines = []
     for i, c in enumerate(candidates, start=1):
-        marker = "" if c.first_proof_eligible else "  (observe-only — not first-proof eligible)"
+        if not c.first_proof_eligible:
+            marker = (
+                "  (declaration site — compiles, does not run: not first-proof eligible)"
+                if _is_declaration_site(c.snippet)
+                else "  (observe-only — not first-proof eligible)"
+            )
+        else:
+            marker = ""
+        # Why this one is above that one. Ordering the list without showing
+        # the axis it was ordered on just relocates the "which do I pick?"
+        # question; `unscoped` is the reason the whole-collection operation
+        # outranks the scoped sibling directly beneath it.
+        scope = f"  {c.scope}" if c.scope else ""
         lines.append(
-            f"{i}. [{c.confidence}] {c.file}:{c.line}  ({c.capability_id}){marker}\n"
+            f"{i}. [{c.confidence}]{scope}  {c.file}:{c.line}  ({c.capability_id}){marker}\n"
             f"   {c.snippet.strip()}"
         )
     return "\n".join(lines)

@@ -555,7 +555,15 @@ def analyze(
         return result
 
     result["preflight"] = pre
-    if pre.get("verdict") == "STOP":
+    # preflight.py's own "STOP" verdict is overloaded: it fires both when a
+    # real governed/production marker was found (a genuine reason not to
+    # wire) AND when preflight merely could not finish looking (an
+    # unreadable subtree, an escaped path, a truncated walk — `not
+    # complete`, no marker at all). Only the first is this module's STOP;
+    # the second is exactly what ANALYSIS_INCOMPLETE exists for (see the
+    # module docstring / CLAUDE.md contract) and must fall through to the
+    # ordinary limitations path below instead of short-circuiting here.
+    if pre.get("verdict") == "STOP" and (pre.get("governed") or pre.get("production")):
         result["status"] = STATUS_STOP
         result["analysisComplete"] = bool(pre.get("complete", False))
         result["generatedAt"] = time.time()
@@ -569,8 +577,8 @@ def analyze(
         result.setdefault("durationMs", int((time.time() - started) * 1000))
         return result
 
-    # Preflight said OK — but "OK" only means it found no markers, not that it
-    # saw everything. Its coverage signals were previously computed and then
+    # Preflight said OK, or STOP-for-coverage-only — but neither means it saw
+    # everything. Its coverage signals were previously computed and then
     # never read by this layer, so a guard that gave up early still produced a
     # clean analysis. Each one now becomes a limitation.
     if pre.get("truncated"):
