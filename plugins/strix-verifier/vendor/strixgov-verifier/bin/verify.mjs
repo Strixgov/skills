@@ -29,6 +29,9 @@ import {
   verifyCtInclusion,
   verifyCtConsistency,
   verifySwarm,
+  verifyLoop,
+  verifyTrustMark,
+  exportOfflineBundle,
 } from "../src/index.mjs";
 
 /**
@@ -101,6 +104,10 @@ Usage:
   strix-verify ct inclusion <evidenceHash> [--ct-base <url>] [--proof <file>]
   strix-verify ct consistency <sth1.json> <sth2.json> [--ct-base <url>] [--proof <file>]
   strix-verify swarm <swarmRunId> [--base <url>] [--proof <file>] [--json]
+  strix-verify loop <loopId> [--base <url>] [--proof <file>] [--jwks <path>] [--json]
+  strix-verify trustmark <grantId> [--proof-base <url>] [--jwks-base <url>] [--revocations <url>] [--json]
+  strix-verify disclosure <bundle.json> [--jwks <path>] [--json]
+  strix-verify proof export <evidenceId> [-o <path>] [--proof-base <url>] [--json]
 
 Options:
   --proof-base <url>      Base URL for proof API (default: https://www.strixgov.com)
@@ -116,6 +123,7 @@ Examples:
   strix-verify 42 --include-attestations
   strix-verify approval <artifactId>
   strix-verify quorum <decisionId>
+  strix-verify proof export 42 -o bundle.json
 
 What evidence verification does:
   1. Fetches the evidence record from the proof API
@@ -124,6 +132,15 @@ What evidence verification does:
   4. Verifies the Ed25519 signature
   5. Verifies the SHA-256 evidence hash
   6. Reports pass/fail with cryptographic details
+
+What proof export does (NOT verification — a separate step by design):
+  1. Fetches the offline proof bundle from the public producer route
+  2. Writes it to disk (default: evidence_v1_<id>.bundle.json, or --json to
+     print to stdout instead)
+  3. Prints the follow-up command to actually verify it offline
+  A 501 (trust-anchor prerequisites not installed on this deployment) or a
+  404/422 response is forwarded with its real structured reason — never a
+  fabricated bundle.
 
 What approval verification does (Phase 3):
   1. Fetches a signed approval artifact (or all artifacts for a decision)
@@ -339,6 +356,223 @@ if (args[0] === "swarm") {
   }
 }
 
+// Selective-disclosure bundle (run_commitment_v1) — independent offline
+// verification: own SCJ-compatible canonicalization + own RFC 6962 walk
+// (src/disclosure.mjs; zero shared code with the producer). Without --jwks
+// the verdict caps at UNVERIFIABLE, never INVALID (SD-5), and every result
+// prints "Completeness: NOT PROVEN" (SD-1 — a root proves inclusion +
+// consistency of the presented slice, structurally never the whole run).
+if (args[0] === "disclosure") {
+  let jwksPath = null;
+  let jsonOut = false;
+  const positional = [];
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--jwks" && args[i + 1]) jwksPath = args[++i];
+    else if (args[i] === "--json") jsonOut = true;
+    else positional.push(args[i]);
+  }
+  const bundlePath = positional[0];
+  if (!bundlePath) {
+    console.error(
+      "Missing bundle path. Usage: strix-verify disclosure <bundle.json> [--jwks <path>] [--json]",
+    );
+    process.exit(2);
+  }
+  try {
+    const { verifyDisclosureBundle } = await import("../src/disclosure.mjs");
+    const bundle = JSON.parse(await fs.readFile(bundlePath, "utf8"));
+    const jwks = jwksPath ? JSON.parse(await fs.readFile(jwksPath, "utf8")) : null;
+    const r = verifyDisclosureBundle(bundle, jwks ? { jwks } : {});
+    if (jsonOut) {
+      console.log(JSON.stringify(r, null, 2));
+    } else {
+      const p = bundle?.commitment?.payload ?? {};
+      console.log(`Disclosure bundle:   ${bundlePath}`);
+      console.log(`  Run:               ${p.runId ?? "(unknown)"} (${p.runKind ?? "?"})`);
+      console.log(`  Committed at:      ${p.committedAt ?? "?"}`);
+      console.log(`  Leaves committed:  ${p.leafCount ?? "?"}`);
+      console.log(`  Records disclosed: ${bundle?.disclosed?.length ?? 0}`);
+      console.log(`  Verdict:           ${r.verdict}`);
+      console.log(`  Reasons:           ${r.reasons.join(", ")}`);
+      for (const pr of r.perRecord) {
+        console.log(`    leaf ${pr.leafIndex}: ${pr.verdict} (${pr.reason})`);
+      }
+      console.log(`  Completeness:      NOT PROVEN — a root proves the slice`);
+      console.log(`                     belongs to the sealed run, never that`);
+      console.log(`                     it is the whole run.`);
+      if (!jwksPath) {
+        console.log(`  Note: no --jwks supplied; verdict capped at UNVERIFIABLE.`);
+      }
+    }
+    process.exit(r.verdict === "VERIFIED" ? 0 : r.verdict === "UNVERIFIABLE" ? 3 : 1);
+  } catch (err) {
+    console.error(`strix-verify disclosure: ${err.message}`);
+    process.exit(2);
+  }
+}
+
+// Governed Loop v1 — independent lifecycle-chain verification. Fetches
+// GET /api/public/proof/loop/<id> and re-derives LP-9 chain integrity + LP-7
+// terminal state with the verifier's own hash + Ed25519 algebra. Per
+// docs/architecture/governed-loop-v1.md.
+if (args[0] === "loop") {
+  let base = null;
+  let proofPath = null;
+  let jwksPath = null;
+  let jsonOut = false;
+  const positional = [];
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--base" && args[i + 1]) base = args[++i];
+    else if (args[i] === "--proof" && args[i + 1]) proofPath = args[++i];
+    else if (args[i] === "--jwks" && args[i + 1]) jwksPath = args[++i];
+    else if (args[i] === "--json") jsonOut = true;
+    else positional.push(args[i]);
+  }
+
+  try {
+    const loopId = positional[0];
+    if (!loopId) {
+      console.error(
+        "Missing loopId. Usage: strix-verify loop <loopId> [--base <url>] [--proof <file>] [--jwks <path>] [--json]",
+      );
+      process.exit(2);
+    }
+    const opts = {};
+    if (base) opts.base = base;
+    if (proofPath) opts.proof = JSON.parse(await fs.readFile(proofPath, "utf8"));
+    if (jwksPath) {
+      const parsed = await readJsonFile(jwksPath);
+      opts.jwks = "keys" in parsed ? parsed : { keys: [parsed] };
+    }
+
+    const r = await verifyLoop(loopId, opts);
+
+    if (jsonOut) {
+      console.log(JSON.stringify(r, null, 2));
+    } else {
+      console.log();
+      console.log(`@strixgov/verifier — Governed Loop v1`);
+      console.log("─".repeat(56));
+      console.log(`  Loop:              ${r.loopId ?? loopId}`);
+      console.log(`  Chain OK (LP-9):   ${r.chainOk ?? "—"}`);
+      console.log(`  Terminal state:    ${r.terminalState ?? "—"}`);
+      if (r.counts) {
+        console.log(`  Iterations:        ${r.counts.iterations}`);
+        console.log(`  Admitted:          ${r.counts.admitted}`);
+        console.log(`  Denied:            ${r.counts.denied}`);
+        console.log(`  Blocked branches:  ${r.counts.blockedBranches}`);
+      }
+      if (r.signatures) {
+        console.log(`  Signatures valid:  ${r.signatures.valid}/${r.signatures.checked}`);
+      }
+      console.log(`  Status:            ${r.verificationStatus}`);
+      if (r.reason) console.log(`  Reason:            ${r.reason}`);
+      if (r.agreesWithServer !== null && r.agreesWithServer !== undefined) {
+        console.log(`  Agrees w/ server:  ${r.agreesWithServer}`);
+      }
+      if (r.error) console.log(`  Error:             ${r.error}`);
+      console.log();
+    }
+    if (r.error || r.verificationStatus === "ERROR") process.exit(2);
+    // Only VERIFIED is a success exit — UNVERIFIABLE means signatures were
+    // never checked (chain integrity only) and must not read as "passed".
+    process.exit(r.verificationStatus === "VERIFIED" ? 0 : 1);
+  } catch (err) {
+    console.error(`strix-verify loop: ${err.message}`);
+    process.exit(2);
+  }
+}
+
+// Offline proof bundle export — the customer-facing CLI half of
+// docs/architecture/offline-proof-bundle-v1.md §"Export surface" (the other
+// half is the Console "Download proof bundle" button). Fetches the
+// already-live producer route and writes the bundle to a file. Deliberately
+// does NOT verify — export and verify stay two separate commands, same as
+// everywhere else in this CLI: `node scripts/verify-offline-bundle.mjs` (or
+// the offline bundle verifier in solo-builder-core) is the next step.
+if (args[0] === "proof") {
+  const sub = args[1];
+  if (sub !== "export") {
+    console.error(`Unknown proof subcommand: ${sub ?? "(none)"}. Expected 'export'.`);
+    process.exit(2);
+  }
+
+  let proofBase = null;
+  let outPath = null;
+  let jsonOut = false;
+  const positional = [];
+  for (let i = 2; i < args.length; i++) {
+    if ((args[i] === "-o" || args[i] === "--output") && args[i + 1]) outPath = args[++i];
+    else if (args[i] === "--proof-base" && args[i + 1]) proofBase = args[++i];
+    else if (args[i] === "--json") jsonOut = true;
+    else positional.push(args[i]);
+  }
+
+  const evidenceId = positional[0];
+  if (!evidenceId) {
+    console.error(
+      "Missing evidenceId. Usage: strix-verify proof export <evidenceId> [-o <path>] [--proof-base <url>] [--json]",
+    );
+    process.exit(2);
+  }
+
+  try {
+    const opts = {};
+    if (proofBase) opts.proofBase = proofBase;
+    const result = await exportOfflineBundle(evidenceId, opts);
+
+    if (!result.ok) {
+      if (jsonOut) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log();
+        console.log(`@strixgov/verifier — Offline Proof Bundle Export`);
+        console.log("─".repeat(56));
+        console.log(`  Evidence ID:       ${evidenceId}`);
+        console.log(`  HTTP status:       ${result.status}`);
+        console.log(`  Error:             ${result.error ?? "(unknown)"}`);
+        if (result.message) console.log(`  Message:           ${result.message}`);
+        if (result.prerequisites) {
+          console.log(`  Prerequisites:     ${result.prerequisites.status}`);
+          for (const item of result.prerequisites.items ?? []) {
+            console.log(`    ${item.ready ? "✓" : "✗"} ${item.id}`);
+          }
+        }
+        console.log();
+        console.log(`  (no file written)`);
+        console.log();
+      }
+      // A structured non-200 answer (404/422/429/501) is a real, non-network
+      // answer — FAILED semantics (exit 1), not ERROR (exit 2).
+      process.exit(1);
+    }
+
+    const defaultName = `evidence_v1_${evidenceId}.bundle.json`;
+    const target = outPath ?? defaultName;
+    const serialized = JSON.stringify(result.bundle, null, 2);
+
+    if (jsonOut) {
+      console.log(serialized);
+    } else {
+      await fs.writeFile(target, serialized, "utf8");
+      console.log();
+      console.log(`@strixgov/verifier — Offline Proof Bundle Export`);
+      console.log("─".repeat(56));
+      console.log(`  Evidence ID:       ${evidenceId}`);
+      console.log(`  HTTP status:       ${result.status}`);
+      console.log(`  Written to:        ${target}`);
+      console.log();
+      console.log(`  This command exports only — it does not verify. Next step:`);
+      console.log(`    node scripts/verify-offline-bundle.mjs ${target}`);
+      console.log();
+    }
+    process.exit(0);
+  } catch (err) {
+    console.error(`strix-verify proof export: ${err.message}`);
+    process.exit(2);
+  }
+}
+
 // Tool-gateway receipt subcommands (offline-capable)
 if (args[0] === "receipt" || args[0] === "chain") {
   const subcommand = args[0];
@@ -530,6 +764,69 @@ if (args[0] === "approval" || args[0] === "quorum") {
     process.exit(ok ? 0 : 1);
   } catch (err) {
     console.error(`Fatal error: ${err.message}`);
+    process.exit(2);
+  }
+}
+
+// Consumer Trust Mark v1 — independent grant verification.
+// Fetches the published grant from GET /api/public/proof/trustmark/<grantId>
+// and re-derives rules 1–8 offline against the live Strix authority JWKS. Per
+// docs/architecture/consumer-trust-mark-v1.md (ADR-029). TM-1 is ACTIVE (the
+// §6 promotion), so a fully-valid grant + fresh coverage reports VERIFIED.
+// For a 0.7.0 grant (signed kernel_policy_hash + coverage_window_seconds) rule 9
+// (coverage) is ALSO re-derived here from the licensee heartbeat — trusting only
+// the authority signature + the licensee key custody. `--no-coverage` skips it.
+if (args[0] === "trustmark") {
+  const grantId = args[1];
+  if (!grantId) {
+    console.error("Missing grantId. Usage: strix-verify trustmark <grantId> [--proof-base <url>] [--jwks-base <url>] [--json]");
+    process.exit(2);
+  }
+  const opts = {};
+  let jsonOut = false;
+  for (let i = 2; i < args.length; i++) {
+    if (args[i] === "--proof-base" && args[i + 1]) opts.proofBase = args[++i];
+    else if (args[i] === "--jwks-base" && args[i + 1]) opts.jwksBase = args[++i];
+    else if (args[i] === "--revocations" && args[i + 1]) opts.revocationsUrl = args[++i];
+    else if (args[i] === "--no-coverage") opts.coverage = false;
+    else if (args[i] === "--json") jsonOut = true;
+  }
+
+  try {
+    const r = await verifyTrustMark(grantId, opts);
+    if (jsonOut) {
+      console.log(JSON.stringify(r, null, 2));
+    } else {
+      console.log();
+      console.log(`@strixgov/verifier — Consumer Trust Mark (TM-1) ${grantId}`);
+      console.log("─".repeat(64));
+      if (r.error) {
+        console.log(`  Error:             ${r.error}`);
+      } else {
+        console.log(`  Licensee:          ${r.licenseeId ?? "—"}`);
+        console.log(`  Mark class:        ${r.markClass ?? "—"}`);
+        console.log(`  Surface origin:    ${r.surfaceOrigin ?? "—"}`);
+        console.log(`  Capability active: ${r.capabilityActive}${r.capabilityActive ? "" : "  (TM-1 not ACTIVE)"}`);
+        console.log(`  Grant verified:    ${r.valid}  (rules 1–8: schema · signature · capability · mark_class · surface_origin · heartbeat_key · validity_window)`);
+        if (!r.valid && r.reason) console.log(`  Reason:            ${r.reason}`);
+        if (r.coverageIndependent) {
+          // Rule 9 re-derived here from the grant's signed comparands + the licensee
+          // heartbeat — trusting only the authority signature + the licensee key custody.
+          console.log(`  Coverage (rule 9): ${r.coverageStatus}${r.coverageReason ? `  (${r.coverageReason})` : ""}  — independently re-derived`);
+          console.log(`                     trusting the grant's authority signature + the licensee heartbeat-key custody`);
+          console.log(`                     (a holder of that key can emit fresh heartbeats with a dead kernel — TEE attestation is out of scope)`);
+        } else if (r.serverReported) {
+          console.log(`  Coverage (rule 9): ${r.serverReported.coverage ?? "—"}  ·  badge ${r.serverReported.badge ?? "—"}  (server advisory — legacy 0.6.0 grant has no signed comparands; re-mint to 0.7.0 for independent coverage)`);
+        }
+        console.log(`  Revocation (r10):  ${r.revocationStatus ?? "not checked (no list source)"}`);
+        console.log(`  Status:            ${r.valid ? "VERIFIED" : "NOT VERIFIED"}`);
+      }
+      console.log();
+    }
+    if (r.error) process.exit(2);
+    process.exit(r.valid ? 0 : 1);
+  } catch (err) {
+    console.error(`strix-verify trustmark: ${err.message}`);
     process.exit(2);
   }
 }

@@ -48,21 +48,52 @@ const DEFAULT_JWKS_BASE = "https://www.strixgov.com";
  *
  * Returns the matching JWK or null.
  */
-function resolveJwksByKid(kidOrRedacted, jwks) {
+export function resolveJwksByKid(kidOrRedacted, jwks) {
   // Return ALL JWKs matching the given kid (including redacted-form matches).
   // RFC 7517 declares kid a hint, not a unique index — and the Phase 2
   // closure scenario (Academy's retired key + strix-platform's active key
   // both bound to "strix-prod-2026-05") produces a legitimate kid collision.
   // Verifiers must try each candidate; first-match resolution misses one or
   // the other side and yields SIGNATURE_INVALID for half the records.
-  const exact = (jwks.keys ?? []).filter((k) => k.kid === kidOrRedacted);
-  if (exact.length > 0) return exact;
+  const keys = jwks.keys ?? [];
 
-  // Redacted form: strix-***-YYYY-MM. Match by suffix.
+  // UNION exact + case-insensitive candidates — do NOT short-circuit on the
+  // first exact match. A kid is conventionally lowercase ("strix-{env}-{YYYY-MM}"),
+  // but a historical signer-config defect minted records under an uppercase env
+  // segment (strix-PROD-2026-05, issue #1306). The kid casing never enters the
+  // signed canonical payload — it only selects WHICH public key to try — so a
+  // case-variant of the same kid is signature-equivalent. This mirrors the
+  // runtime resolver (apps/strix-console/src/lib/signing.ts getPublicKeyJwks),
+  // which already matches kids case-insensitively.
+  //
+  // WHY UNION, NOT "exact first, else case-insensitive" (v1.17.0, issue #1628):
+  // if a JWKS serves a WRONG key under the exact (e.g. uppercase) kid AND the
+  // CORRECT key under a case-variant, the old exact-then-fallback logic returned
+  // ONLY the wrong exact match and never tried the correct case-variant — the
+  // record failed even though its key was served. Unioning tries every
+  // candidate; the verifier accepts on the first that validates and an extra
+  // non-matching key is harmless. RFC 7517 declares kid a hint, not a unique
+  // index, so multiple candidates under one (case-folded) kid is expected.
+  const exact = keys.filter((k) => k.kid === kidOrRedacted);
+  const lower =
+    typeof kidOrRedacted === "string" ? kidOrRedacted.toLowerCase() : null;
+  const ciExtra = lower
+    ? keys.filter(
+        (k) =>
+          typeof k.kid === "string" &&
+          k.kid !== kidOrRedacted && // not already counted in `exact`
+          k.kid.toLowerCase() === lower,
+      )
+    : [];
+  const union = [...exact, ...ciExtra]; // exact preferred first, case-variants after
+  if (union.length > 0) return union;
+
+  // Redacted form: strix-***-YYYY-MM. Match by suffix. (The YYYY-MM digits carry
+  // no case, so no union is needed on this branch.)
   const m = kidOrRedacted.match(/^strix-\*\*\*-(\d{4}-\d{2})$/);
   if (!m) return [];
   const suffix = `-${m[1]}`;
-  return (jwks.keys ?? []).filter(
+  return keys.filter(
     (k) => typeof k.kid === "string" && k.kid.endsWith(suffix),
   );
 }
@@ -247,6 +278,62 @@ export async function fetchEvidence(evidenceId, proofBase = DEFAULT_PROOF_BASE) 
 
   // Academy shape (data.proof) or pre-1.3 raw (data directly).
   return data.proof ?? data;
+}
+
+// ─── Offline Proof Bundle Export ───────────────────────────────────────────────
+//
+// Customer-facing half of docs/architecture/offline-proof-bundle-v1.md
+// §"Export surface" (the other half is the Console "Download proof bundle"
+// button). Fetches the already-live producer route
+// (apps/strix-console/src/app/api/public/proof/bundle/[evidenceId]/route.ts)
+// and returns its body verbatim — this function does NOT verify the bundle.
+// Verification is `node scripts/verify-offline-bundle.mjs` (a separate,
+// deliberately independent step, same discipline as "export" vs "verify"
+// staying two different commands everywhere else in this CLI).
+//
+// The route's own identifier is a plain evidenceId — PPI-1 (a dedicated
+// portable-proof-identity resolver, docs/architecture/portable-proof-identity-v1.md)
+// is still `planned` per the structural-invariants manifest, not built. The
+// architecture doc's `strix proof export <ppi> -o bundle.json` usage example
+// predates that distinction; today the evidenceId IS the portable identifier.
+
+/**
+ * Fetch an offline proof bundle from the public producer route. Returns the
+ * raw bundle body on success; on any non-200 response, returns the route's
+ * own structured error body (never fabricates one) so the caller can surface
+ * exactly why a bundle isn't available (501 pending_trust_anchor_setup, 404
+ * not_found, 422 record_unsigned / operational_key_not_attested / etc).
+ *
+ * @param {number|string} evidenceId
+ * @param {object} [options]
+ * @param {string} [options.proofBase]
+ * @returns {Promise<{ok: boolean, status: number, url: string, bundle?: object, error?: string, message?: string, [key: string]: unknown}>}
+ */
+export async function exportOfflineBundle(evidenceId, options = {}) {
+  const proofBase = options.proofBase ?? DEFAULT_PROOF_BASE;
+  const url = `${proofBase}/api/public/proof/bundle/${encodeURIComponent(String(evidenceId))}`;
+  const res = await fetchWithContext(url, { headers: { Accept: "application/json" } });
+
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    return {
+      ok: false,
+      status: res.status,
+      url,
+      error: "invalid_response",
+      message: `Response was not valid JSON (HTTP ${res.status}).`,
+    };
+  }
+
+  if (!res.ok) {
+    // body is already the route's structured error shape
+    // ({error, message, prerequisites?, ...}) — forward it as-is.
+    return { ok: false, status: res.status, url, ...body };
+  }
+
+  return { ok: true, status: res.status, url, bundle: body };
 }
 
 // ─── Canonical Payload ────────────────────────────────────────────────────────
@@ -2286,3 +2373,244 @@ export async function verifySwarm(swarmRunId, opts = {}) {
     agreesWithServer: proof.verification_status ? proof.verification_status === overall : null,
   };
 }
+
+// ─── Governed Loop v1 — independent lifecycle-chain verification ──────────
+//
+// Contract: docs/architecture/governed-loop-v1.md (contractVersion 1.0.0).
+// Zero-shared-code with the producer (apps/strix-console/src/lib/loop/,
+// solo-builder-core/src/loop-*.ts): this re-derives the LP-9 hash chain and
+// the LP-7 worst-of terminal state from its OWN implementation using only
+// `scjCanonicalize` (this package's SCJ v1 mirror) + node:crypto — no
+// import from either producer.
+//
+// Expected proof shape (GET /api/public/proof/loop/<loopId>):
+//   {
+//     loopId, intent: { canonical: { payload }, signature, signingKeyId },
+//     iterations: [ { canonical: { payload }, signature, signingKeyId }, ... ],
+//     verification_status: "<server's own opinion, for the agreement check>"
+//   }
+//
+// Signature verification is OPTIONAL (--jwks <path>): without a JWKS, this
+// only proves chain INTEGRITY, and the verdict is capped at UNVERIFIABLE
+// (never VERIFIED) for that reason — mirrors the SA-4 discipline used
+// elsewhere in this codebase: "cannot verify" is never conflated with
+// "proven wrong". A broken chain is ALWAYS reported as INVALID regardless of
+// whether keys were supplied — a proven break outranks an unproven claim.
+
+/** Independent re-derivation of LP-9: dense/monotonic indices + hash-linked chain. */
+function loopVerifyChain(iterationPayloads) {
+  for (let i = 0; i < iterationPayloads.length; i++) {
+    const rec = iterationPayloads[i];
+    if (rec.iterationIndex !== i) {
+      return { ok: false, brokenAtIndex: i, reason: "LOOP_CHAIN_BROKEN" };
+    }
+    if (i === 0) {
+      if (rec.priorIterationHash !== null) {
+        return { ok: false, brokenAtIndex: 0, reason: "LOOP_CHAIN_BROKEN" };
+      }
+      continue;
+    }
+    // solo-builder-core's sha256OfJSON prefixes "sha256:" — match it exactly
+    // so this independent re-derivation compares like-for-like.
+    const priorHash =
+      "sha256:" +
+      crypto
+        .createHash("sha256")
+        .update(scjCanonicalize(iterationPayloads[i - 1]), "utf-8")
+        .digest("hex");
+    if (rec.priorIterationHash !== priorHash) {
+      return { ok: false, brokenAtIndex: i, reason: "LOOP_CHAIN_BROKEN" };
+    }
+  }
+  return { ok: true };
+}
+
+/** Governance-block denial reasons (a "blocked branch") vs. plain lifecycle denials. */
+const LOOP_BLOCK_REASONS = new Set([
+  "LOOP_CEILING_AMPLIFIED",
+  "LOOP_META_CAPABILITY_REFUSED",
+  "LOOP_BUDGET_EXHAUSTED",
+  "LOOP_CONSUMPTION_UNDECLARED",
+  "LOOP_ENV_OUT_OF_SCOPE",
+]);
+
+/**
+ * Independent re-derivation of LP-7: worst-of roll-up over the admitted
+ * iterations' run terminal states + the blocked-branch count. Mirrors
+ * computeLoopTerminalState's precedence exactly, written independently.
+ */
+function loopComputeTerminalState(iterationPayloads) {
+  const admitted = iterationPayloads.filter((r) => r.admissionVerdict === "ADMITTED");
+  const denied = iterationPayloads.filter((r) => r.admissionVerdict === "DENIED");
+  const blockedBranches = denied.filter((d) => LOOP_BLOCK_REASONS.has(d.admissionReason)).length;
+  const runStates = admitted.map((r) => r.runTerminalState).filter((s) => typeof s === "string");
+
+  if (runStates.includes("FAILED") || runStates.includes("CONTROL_UNAVAILABLE")) return "FAILED";
+  if (runStates.includes("VERIFICATION_FAILED")) return "VERIFICATION_FAILED";
+  const clean = new Set(["COMPLETED"]);
+  const blocked = new Set(["COMPLETED_WITH_BLOCKED_BRANCHES", "BUDGET_EXHAUSTED"]);
+  const unrecognized = runStates.filter((s) => !clean.has(s) && !blocked.has(s));
+  if (unrecognized.length > 0) return "VERIFICATION_FAILED";
+
+  const anyBlocked = blockedBranches > 0 || runStates.some((s) => blocked.has(s));
+  if (runStates.length > 0) return anyBlocked ? "COMPLETED_WITH_BLOCKED_BRANCHES" : "COMPLETED";
+  if (anyBlocked) return "COMPLETED_WITH_BLOCKED_BRANCHES";
+  return "NONE";
+}
+
+export async function verifyLoop(loopId, opts = {}) {
+  const base = opts.base ?? DEFAULT_JWKS_BASE;
+
+  let proof = opts.proof;
+  if (!proof) {
+    const url = `${base}/api/public/proof/loop/${encodeURIComponent(loopId)}`;
+    let res;
+    try {
+      res = await fetch(url, { cache: "no-cache", headers: { accept: "application/json" } });
+    } catch (err) {
+      return { verificationStatus: "ERROR", loopId, error: err.message };
+    }
+    if (res.status === 404) {
+      return { verificationStatus: "NOT_FOUND", loopId };
+    }
+    if (!res.ok) {
+      return { verificationStatus: "ERROR", loopId, error: `HTTP ${res.status}` };
+    }
+    proof = await res.json();
+  }
+
+  const intentPayload = proof.intent?.canonical?.payload ?? proof.intent;
+  if (!intentPayload || !intentPayload.loopId) {
+    return { verificationStatus: "ERROR", loopId, error: "malformed proof response (no intent)" };
+  }
+  const iterationEnvelopes = proof.iterations ?? [];
+  const iterationPayloads = iterationEnvelopes.map((it) => it.canonical?.payload ?? it);
+
+  if (iterationPayloads.length === 0) {
+    return {
+      verificationStatus: "LEGACY_UNSIGNED",
+      reason: "LOOP_NO_SIGNED_MATERIAL",
+      loopId: intentPayload.loopId,
+      counts: { iterations: 0, admitted: 0, denied: 0, blockedBranches: 0 },
+    };
+  }
+
+  const chain = loopVerifyChain(iterationPayloads);
+  const terminalState = chain.ok ? loopComputeTerminalState(iterationPayloads) : "VERIFICATION_FAILED";
+
+  const admitted = iterationPayloads.filter((r) => r.admissionVerdict === "ADMITTED");
+  const denied = iterationPayloads.filter((r) => r.admissionVerdict === "DENIED");
+  const blockedBranches = denied.filter((d) => LOOP_BLOCK_REASONS.has(d.admissionReason)).length;
+
+  // Optional signature verification. Without a JWKS, the verdict is capped
+  // at UNVERIFIABLE — never VERIFIED — because signatures were never checked.
+  let signaturesChecked = 0;
+  let signaturesValid = 0;
+  let signaturesAttempted = false;
+  if (opts.jwks) {
+    signaturesAttempted = true;
+    const check = (payload, signature, signingKeyId) => {
+      signaturesChecked++;
+      const jwk = resolveJwkFromKid(signingKeyId, opts.jwks);
+      if (!jwk) return false;
+      try {
+        const key = jwkToPublicKey(jwk);
+        const ok = crypto.verify(
+          null,
+          Buffer.from(scjCanonicalize(payload), "utf-8"),
+          key,
+          Buffer.from(signature, "base64"),
+        );
+        if (ok) signaturesValid++;
+        return ok;
+      } catch {
+        return false;
+      }
+    };
+    if (proof.intent?.signature) check(intentPayload, proof.intent.signature, proof.intent.signingKeyId);
+    for (let i = 0; i < iterationEnvelopes.length; i++) {
+      const env = iterationEnvelopes[i];
+      if (env?.signature) check(iterationPayloads[i], env.signature, env.signingKeyId);
+    }
+  }
+  const allSignaturesValid = signaturesAttempted && signaturesChecked > 0 && signaturesValid === signaturesChecked;
+
+  let overall;
+  let overallReason;
+  if (!chain.ok) {
+    overall = "INVALID";
+    overallReason = chain.reason;
+  } else if (signaturesAttempted && !allSignaturesValid) {
+    overall = "INVALID";
+    overallReason = "LOOP_SIGNATURE_INVALID";
+  } else if (!signaturesAttempted) {
+    // Chain integrity holds, but nothing was cryptographically verified —
+    // "cannot verify", never "invalid" (SA-4 discipline).
+    overall = "UNVERIFIABLE";
+    overallReason = "LOOP_SIGNATURES_NOT_CHECKED";
+  } else {
+    overall = "VERIFIED";
+    overallReason = "LOOP_VERIFIED";
+  }
+
+  return {
+    verificationStatus: overall,
+    reason: overallReason,
+    loopId: intentPayload.loopId,
+    chainOk: chain.ok,
+    terminalState,
+    counts: {
+      iterations: iterationPayloads.length,
+      admitted: admitted.length,
+      denied: denied.length,
+      blockedBranches,
+    },
+    signatures: signaturesAttempted
+      ? { checked: signaturesChecked, valid: signaturesValid }
+      : null,
+    // Agreement check: does our independent verdict match the server's?
+    serverStatus: proof.verification_status ?? null,
+    agreesWithServer: proof.verification_status ? proof.verification_status === overall : null,
+  };
+}
+
+// ─── Consumer Trust Mark v1 (TM-1) ─────────────────────────────────────────
+// The trust_mark_grant_v1 verifier + CLI fetch + public block live in their
+// own module (port of solo-builder-core ADR-029 schema authority,
+// conformance-locked to vectors/trust_mark_grant_v1/). Re-exported here so the
+// published @strixgov/verifier surface and bin/verify.mjs resolve them. The
+// import inside trust-mark.mjs (scjCanonicalize, fetchPublicKeys) is a runtime
+// circular reference resolved by function hoisting — both are declared above.
+export {
+  verifyTrustMark,
+  verifyTrustMarkGrant,
+  renderTrustMarkBlock,
+  resolveTrustMarkCoverageFromGrant,
+  ed25519PublicKeyFromRawHex,
+  TRUST_MARK_WELL_KNOWN_HEARTBEAT_PATH,
+  COVERAGE_STATUS,
+  TM1_REASON,
+  TM1_RULE,
+  TM1_CAPABILITY_STATUS,
+} from "./trust-mark.mjs";
+export {
+  buildTrustMarkRevocationPayload,
+  canonicalizeTrustMarkRevocation,
+  signTrustMarkRevocationList,
+  parseTrustMarkRevocationList,
+  verifyTrustMarkRevocationSignature,
+  resolveGrantRevocation,
+  TRUST_MARK_REVOCATION_SCHEMA_VERSION,
+} from "./trust-mark-revocation.mjs";
+
+// MC-1 → SCITT Signed Statement (COSE_Sign1) verifier — E2 profile. Verify-only,
+// zero-dep, cross-validated against conformance/corpus/mcp_proof_scitt_v1/. This
+// is the code capability (gate step 4b); a public "SCITT-conformant" claim is
+// still gated on IANA registration + THREAT-MODEL §9 (scitt-public-claim-gate.md).
+export {
+  verifyMcpScittStatement,
+  detectMcpProofForm,
+  MCP_SCITT_PROFILE,
+  MCP_PROOF_CTY,
+  MCP_SCITT_REASONS,
+} from "./mcp-scitt.mjs";

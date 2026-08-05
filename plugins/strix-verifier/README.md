@@ -64,7 +64,7 @@ them instead of dead-ending on the 403.
 | MCP server | `mcp/server.mjs` (`.mcp.json`) | Tools `strix_verify`, `strix_verify_record`, `strix_verify_swarm` an agent can call to get a structured verdict. |
 | Stop hook | `hooks/verify-on-stop.mjs` (`hooks/hooks.json`) | **Opt-in** continuous-trust check: re-verify a pinned record each turn. Off by default. |
 | CLI wrapper | `bin/strix-verify` | Stable entry point; prefers the vendored verifier, falls back to `npx`. |
-| Vendored verifier | `vendor/strixgov-verifier/` | The verbatim MIT-published `@strixgov/verifier@1.11.0`, so launching the verifier needs no network. |
+| Vendored verifier | `vendor/strixgov-verifier/` | The verbatim MIT-published `@strixgov/verifier@1.20.0`, so launching the verifier needs no network. |
 
 ## Use — slash command
 
@@ -111,7 +111,7 @@ even on a FAILED verdict. The verdict is re-derived by the verifier, not the hoo
 
 ```json
 {
-  "verifierVersion": "1.11.0",
+  "verifierVersion": "1.20.0",
   "proofBase": "https://www.strixgov.com",
   "jwksBase": "https://www.strixgov.com",
   "sampleRecord": "5686",

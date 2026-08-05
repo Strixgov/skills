@@ -2,7 +2,7 @@
 // Reproducibly (re-)vendor the published @strixgov/verifier into vendor/.
 //
 //   node scripts/vendor-verifier.mjs            # vendor the pinned version from config.json
-//   node scripts/vendor-verifier.mjs 1.11.0     # vendor an explicit version
+//   node scripts/vendor-verifier.mjs 1.20.0     # vendor an explicit version
 //
 // What it does: `npm pack @strixgov/verifier@<version>`, extracts the tarball
 // into vendor/strixgov-verifier/, and prints the npm-reported integrity sha512
@@ -12,7 +12,7 @@
 // package is the single source of truth).
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, renameSync, mkdtempSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, renameSync, mkdtempSync, readdirSync, chmodSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -59,6 +59,10 @@ if (extract.status !== 0) {
   process.exit(extract.status || 1);
 }
 renameSync(join(work, "package"), dest);
+// npm tarballs ship bin scripts as 0644 (the exec bit is normally restored at
+// install time by npm's bin linking, which vendoring bypasses) — restore it so
+// the CLI runs directly and git tracks 100755, per the integration test.
+chmodSync(join(dest, "bin", "verify.mjs"), 0o755);
 rmSync(work, { recursive: true, force: true });
 
 console.error(`Vendored ${spec} → vendor/strixgov-verifier`);

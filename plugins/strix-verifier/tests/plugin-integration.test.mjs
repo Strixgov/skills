@@ -206,7 +206,7 @@ test("npx fallback: STRIX_VERIFIER_FORCE_NPX=1 invokes npx with the pinned packa
   const args = JSON.parse(fs.readFileSync(marker, "utf8"));
   fs.rmSync(tmp, { recursive: true, force: true });
 
-  assert.deepEqual(args.slice(0, 2), ["-y", "@strixgov/verifier@1.11.0"], `expected npx invoked with -y @strixgov/verifier@<pinned>, got ${JSON.stringify(args)}`);
+  assert.deepEqual(args.slice(0, 2), ["-y", "@strixgov/verifier@1.20.0"], `expected npx invoked with -y @strixgov/verifier@<pinned>, got ${JSON.stringify(args)}`);
   assert.equal(args[2], "5686");
 });
 

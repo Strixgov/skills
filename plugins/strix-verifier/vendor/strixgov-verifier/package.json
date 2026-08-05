@@ -1,6 +1,6 @@
 {
   "name": "@strixgov/verifier",
-  "version": "1.11.0",
+  "version": "1.20.0",
   "description": "Independent verification of Strix governance evidence, approval artifacts, linked attestations (with redacted-kid support), and @strixgov/tool-gateway receipts (schema v1 + v2) plus chain snapshots and v0.3-experimental connected-mode wire envelopes. Offline-capable. No Strix tooling required.",
   "license": "MIT",
   "bin": {
@@ -11,6 +11,14 @@
     ".": {
       "import": "./src/index.mjs",
       "default": "./src/index.mjs"
+    },
+    "./evidence-contract": {
+      "import": "./src/evidence-contract.mjs",
+      "default": "./src/evidence-contract.mjs"
+    },
+    "./verify-v2": {
+      "import": "./src/verify-v2.mjs",
+      "default": "./src/verify-v2.mjs"
     }
   },
   "type": "module",

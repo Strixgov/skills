@@ -217,6 +217,11 @@ were originally signed. The CLI also runs a similar (but distinct)
 | Tool-gateway receipts | `strix-verify receipt <file.json> --jwks <jwks.json>` | Offline (local file) |
 | Receipt chains | `strix-verify chain <file.jsonl> --jwks <jwks.json>` | Offline (local file) |
 | Visual Artifacts v1 (signed SVG cards) | `strix-verify visual <file.svg> [--jwks <jwks.json>]` | Offline / online (mixed) |
+| Agent Swarm v1 delegation graphs | `strix-verify swarm <swarmRunId> [--proof <file>] [--json]` | Online (proof API) / offline (`--proof`) |
+| Strix-CT v1 Merkle inclusion | `strix-verify ct inclusion <evidenceHash> [--ct-base <url>] [--proof <file>]` | Online (CT sequencer) / offline (`--proof`) |
+| Strix-CT v1 consistency between two STHs | `strix-verify ct consistency <sth1.json> <sth2.json> [--ct-base <url>] [--proof <file>]` | Online (CT sequencer) / offline (`--proof`) |
+| Consumer Trust Mark v1 grants | `strix-verify trustmark <grantId> [--proof-base <url>] [--jwks-base <url>] [--revocations <url>] [--json]` | Online (proof API) |
+| Offline proof bundle export (not verification — see the note in CLI usage) | `strix-verify proof export <evidenceId> [-o <path>] [--proof-base <url>] [--json]` | Online fetch, offline artifact |
 | Connected-mode wire envelopes | Programmatic: `verifyConnectedWireEnvelope(...)` | Inbound HTTP (server-side) |
 
 **Mode legend:**
@@ -250,6 +255,16 @@ strix-verify approval <approval-artifact-id>
 # decisionId is also a cuid string, identifying the underlying decision
 # whose approval chain you want to walk.
 strix-verify quorum <decision-id>
+
+# Online: independently verify an Agent Swarm v1 delegation graph.
+# Fetches GET /api/public/proof/swarm/<swarmRunId> and re-derives the swarm
+# integrity verdict with the verifier's OWN SCJ v1 canonicalization, Ed25519
+# edge-signature checks, and SW-2/SW-5 attenuation algebra (zero shared code
+# with @strixgov/sdk). Reports agreesWithServer.
+strix-verify swarm <swarm-run-id>
+
+# Offline: verify a swarm run from a saved proof JSON (no network)
+strix-verify swarm <swarm-run-id> --proof ./swarm-proof.json --json
 
 # Offline: verify a local tool-gateway receipt
 # `receipt.json` is produced by your local @strixgov/tool-gateway —
@@ -383,6 +398,22 @@ import {
   verifyVisual,
   extractVisualMetadata,
 
+  // Agent Swarm v1 delegation graphs
+  verifySwarm,
+
+  // Strix-CT v1 (Merkle inclusion / consistency)
+  verifyCtInclusion,
+  verifyCtConsistency,
+
+  // Consumer Trust Mark v1 (TM-1)
+  verifyTrustMark,
+  verifyTrustMarkGrant,
+  resolveTrustMarkCoverageFromGrant,
+
+  // Offline proof bundle export (fetch + write only — NOT verification,
+  // see the CLI usage note above)
+  exportOfflineBundle,
+
   // Compatibility helper covering hosted + receipt in one call
   verifyToolGatewayProof,
 } from "@strixgov/verifier";
@@ -439,8 +470,11 @@ never reaches anywhere else for the keys that gate validation.
 - Keys are retained for a **minimum of 2 years** after rotation
   (EU AI Act minimum retention). Records signed under a rotated kid
   remain verifiable for at least that window.
-- Cache-Control on the JWKS response is `public, s-maxage=60`, so any
-  intentional change is globally visible within ~1 minute.
+- Cache-Control on the JWKS response includes `s-maxage=60` (alongside a
+  longer client-side `max-age` — 300s for the full set, 3600s for a
+  single-key lookup), so an intentional key change is globally visible
+  at the CDN edge within ~1 minute even if an individual client's own
+  cache holds the response longer.
 - New keys are announced via the production CHANGELOG before rotation.
 
 **What the verifier reads — and what it ignores:**
