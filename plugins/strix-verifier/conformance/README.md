@@ -1,4 +1,4 @@
-# Gate-J conformance harness
+# Verifier conformance harness
 
 Proves the vendored `@strixgov/verifier` copy in this plugin behaves
 correctly — nothing here re-implements or second-guesses its crypto; every

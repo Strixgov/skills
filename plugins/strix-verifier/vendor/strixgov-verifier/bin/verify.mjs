@@ -107,6 +107,7 @@ Usage:
   strix-verify loop <loopId> [--base <url>] [--proof <file>] [--jwks <path>] [--json]
   strix-verify trustmark <grantId> [--proof-base <url>] [--jwks-base <url>] [--revocations <url>] [--json]
   strix-verify disclosure <bundle.json> [--jwks <path>] [--json]
+  strix-verify agent-session <bundle.json> [--jwks <path>] [--json]
   strix-verify proof export <evidenceId> [-o <path>] [--proof-base <url>] [--json]
 
 Options:
@@ -407,6 +408,91 @@ if (args[0] === "disclosure") {
     process.exit(r.verdict === "VERIFIED" ? 0 : r.verdict === "UNVERIFIABLE" ? 3 : 1);
   } catch (err) {
     console.error(`strix-verify disclosure: ${err.message}`);
+    process.exit(2);
+  }
+}
+
+// Governed agent navigation session (agent_navigation_evidence_v1 sealed under
+// a run_commitment_v1 of runKind "agent_session") — independent offline
+// verification: own SCJ-compatible canonicalization, own per-event content
+// addressing, own chain walk, own RFC 6962 Merkle root (src/agent-session.mjs;
+// zero shared code with the producer). Without --jwks the verdict caps at
+// UNVERIFIABLE, never INVALID (NAV-7). Every result prints the two honesty
+// boundaries: completeness is NOT PROVEN (NAV-3) and the verdict says nothing
+// about whether the review's findings are correct (NAV-4).
+if (args[0] === "agent-session") {
+  let jwksPath = null;
+  let jsonOut = false;
+  const positional = [];
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--jwks" && args[i + 1]) jwksPath = args[++i];
+    else if (args[i] === "--json") jsonOut = true;
+    else positional.push(args[i]);
+  }
+  const bundlePath = positional[0];
+  if (!bundlePath) {
+    console.error(
+      "Missing bundle path. Usage: strix-verify agent-session <bundle.json> [--jwks <path>] [--json]",
+    );
+    process.exit(2);
+  }
+  try {
+    const { verifyAgentSessionBundle } = await import("../src/agent-session.mjs");
+    const bundle = JSON.parse(await fs.readFile(bundlePath, "utf8"));
+    const jwks = jwksPath ? JSON.parse(await fs.readFile(jwksPath, "utf8")) : null;
+    const r = verifyAgentSessionBundle(bundle, jwks ? { jwks } : {});
+    if (jsonOut) {
+      console.log(JSON.stringify(r, null, 2));
+    } else {
+      const p = bundle?.commitment?.payload ?? {};
+      const screens = new Set(
+        (Array.isArray(bundle?.events) ? bundle.events : [])
+          .map((e) => e?.payload?.screen)
+          .filter((s) => typeof s === "string"),
+      );
+      console.log(`Agent session bundle: ${bundlePath}`);
+      console.log(`  Session:            ${p.runId ?? "(unknown)"}`);
+      console.log(`  Capability:         ${bundle?.events?.[0]?.payload?.capabilityId ?? "?"}`);
+      console.log(`  Committed at:       ${p.committedAt ?? "?"}`);
+      console.log(`  Events committed:   ${p.leafCount ?? "?"}`);
+      console.log(`  Events presented:   ${r.eventCount}`);
+      console.log(`  Screens observed:   ${screens.size}`);
+      console.log(`  Chain head:         ${r.chainHead ?? "(none)"}`);
+      console.log(`  Verdict:            ${r.verdict}`);
+      console.log(`  Reasons:            ${r.reasons.join(", ")}`);
+      console.log(`  Anchored by:        ${r.integrityAnchoredBy}`);
+      const fb = r.findingsBinding ?? { verdict: "?", reasons: [], perFinding: [] };
+      console.log(`  Findings binding:   ${fb.verdict} (${fb.reasons.join(", ")})`);
+      for (const pf of fb.perFinding) {
+        if (pf.verdict !== "VERIFIED") {
+          console.log(`    ${pf.findingId}: ${pf.verdict} (${pf.reason})`);
+        }
+      }
+      console.log(`  Completeness:       NOT PROVEN — this proves the presented`);
+      console.log(`                      events are the ones sealed under the`);
+      console.log(`                      signed root, in that order, unedited.`);
+      console.log(`                      It cannot prove the agent recorded`);
+      console.log(`                      everything it did.`);
+      console.log(`  Review correctness: NOT PROVEN — findings are a model's`);
+      console.log(`                      opinion, bound to observed screens but`);
+      console.log(`                      never certified by this verdict.`);
+      if (!jwksPath) {
+        console.log(`  Note: no --jwks supplied; verdict capped at UNVERIFIABLE.`);
+      }
+    }
+    // Exit code is the worst of session integrity and finding binding: a
+    // deliverable whose findings cite screens that were never visited is not
+    // a clean pass, even when the session itself verifies.
+    const rank = { VERIFIED: 0, UNVERIFIABLE: 3, INVALID: 1 };
+    const worst =
+      r.verdict === "INVALID" || r.findingsBinding?.verdict === "INVALID"
+        ? "INVALID"
+        : r.verdict === "UNVERIFIABLE"
+          ? "UNVERIFIABLE"
+          : "VERIFIED";
+    process.exit(rank[worst]);
+  } catch (err) {
+    console.error(`strix-verify agent-session: ${err.message}`);
     process.exit(2);
   }
 }
@@ -861,12 +947,32 @@ const BOLD = "\x1b[1m";
 
 function statusColor(status) {
   if (status === "VERIFIED") return GREEN;
-  if (status === "LEGACY_UNSIGNED" || status === "UNSIGNED") return YELLOW;
+  // UNVERIFIABLE is amber, never red: an unresolvable key means "cannot
+  // verify", not "invalid". Painting it red is the false-negative the
+  // Proof Explorer's four-state vocabulary exists to prevent.
+  if (
+    status === "LEGACY_UNSIGNED" ||
+    status === "UNSIGNED" ||
+    status === "UNVERIFIABLE"
+  ) {
+    return YELLOW;
+  }
   return RED;
 }
 
 function checkMark(ok) {
   return ok ? `${GREEN}✓${RESET}` : `${RED}✗${RESET}`;
+}
+
+/** Tri-state marker: true / false / null ("not checked"). */
+function triMark(v) {
+  if (v === true) return `${GREEN}✓${RESET}`;
+  if (v === false) return `${RED}✗${RESET}`;
+  return `${DIM}–${RESET}`;
+}
+
+function fmtTri(v) {
+  return v === null || v === undefined ? "not checked" : String(v);
 }
 
 try {
@@ -919,23 +1025,48 @@ try {
       console.log();
     }
 
+    console.log(`${BOLD}Record${RESET}`);
+    console.log(`${"─".repeat(52)}`);
+    console.log(`${DIM}Record type:${RESET}     ${result.recordType ?? "unknown"}`);
+    console.log(`${DIM}Schema version:${RESET}  ${result.schemaVersion ?? "unknown"}`);
+    console.log(`${DIM}Signature alg:${RESET}   ${result.signatureAlgorithm ?? "n/a"}`);
+    console.log(`${DIM}Signing key:${RESET}     ${record?.signingKeyId ?? "none"}`);
+    console.log();
+
     console.log(`${BOLD}Verification Results${RESET}`);
     console.log(`${"─".repeat(52)}`);
+    // When no key resolved, no signature check ran — so `hashValid` (which in
+    // SE v1 is established by the signature) was not evaluated. Printing a red
+    // ✗ false there reads as a failed check rather than an absent one.
+    const hashChecked = result.signatureAlgorithm !== null;
     console.log(
-      `  ${checkMark(result.hashValid)} Hash valid:        ${result.hashValid}`
+      `  ${hashChecked ? checkMark(result.hashValid) : triMark(null)} ` +
+        `Hash valid:          ${hashChecked ? result.hashValid : "not checked"}`
     );
     console.log(
-      `  ${checkMark(result.signaturePresent)} Signature present: ${result.signaturePresent}`
+      `  ${triMark(result.chainValid)} Chain valid:         ${fmtTri(result.chainValid)}`
     );
     console.log(
-      `  ${checkMark(result.signatureValid)} Signature valid:   ${result.signatureValid}`
+      `  ${checkMark(result.signaturePresent)} Signature present:   ${result.signaturePresent}`
     );
+    console.log(
+      `  ${checkMark(result.signatureValid)} Signature valid:     ${result.signatureValid}`
+    );
+    if (result.chainValid === null && result.chainReason) {
+      console.log(`       ${DIM}chain: ${result.chainReason}${RESET}`);
+    }
     console.log();
 
     const color = statusColor(result.verificationStatus);
     console.log(
       `  ${BOLD}Status: ${color}${result.verificationStatus}${RESET}`
     );
+    if (result.verificationReason) {
+      console.log(`  ${DIM}Reason: ${result.verificationReason}${RESET}`);
+      if (result.verificationReasonText) {
+        console.log(`  ${DIM}        ${result.verificationReasonText}${RESET}`);
+      }
+    }
     console.log();
 
     if (result.verificationStatus === "VERIFIED") {
@@ -952,9 +1083,25 @@ try {
       console.log(
         `${YELLOW}Hash integrity can still be verified but provenance cannot.${RESET}`
       );
+    } else if (result.verificationStatus === "UNVERIFIABLE") {
+      // Cannot verify is not proven wrong. Saying "tampered" here would be a
+      // false accusation against a record that may be perfectly valid against
+      // a JWKS this verifier was never given.
+      console.log(
+        `${YELLOW}This record could NOT be verified, and that is not the same as invalid.${RESET}`
+      );
+      console.log(
+        `${YELLOW}No conclusion about tampering is warranted. Supply the correct JWKS${RESET}`
+      );
+      console.log(
+        `${YELLOW}with --jwks-base <url> and re-run before drawing any conclusion.${RESET}`
+      );
     } else {
       console.log(
-        `${RED}Verification failed. The record may have been tampered with.${RESET}`
+        `${RED}A signing key resolved and the signature did not verify over the${RESET}`
+      );
+      console.log(
+        `${RED}canonical payload. This record does not match what was signed.${RESET}`
       );
     }
     console.log();

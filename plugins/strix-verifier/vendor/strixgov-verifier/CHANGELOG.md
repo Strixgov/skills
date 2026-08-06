@@ -5,6 +5,125 @@ All notable changes to `@strixgov/verifier` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.0] — 2026-08-01
+
+### Added
+
+- **Complete verification contract on `verify()` and the default CLI output.**
+  The result previously carried three booleans and one status word — enough to
+  answer *did this pass?*, not enough to answer *why not?*. New fields, all
+  present on every result:
+
+  | Field | Meaning |
+  |---|---|
+  | `verificationReason` | Machine-readable code from `VERIFICATION_REASONS` (new export). |
+  | `verificationReasonText` | The registry's human sentence for that code. |
+  | `signatureAlgorithm` | `"Ed25519"` when a signature was actually checked, `null` when none was. |
+  | `schemaVersion` | The record's signed schema version. |
+  | `recordType` | `"signed_evidence_v1"` or `"legacy_unsigned"`. |
+  | `payloadSelfConsistent` | **Diagnostic only.** Whether `evidenceHash` happens to equal `sha256(canonical payload)`. For SE v1 this is normally `false` and that is correct — see "Not changed" below. `--json` only; never rendered as a check. |
+  | `chainReason` | Why `chainValid` is `null`, from `CHAIN_REASONS` (new export). |
+
+  `--json` already existed and now emits all of the above; the human-readable
+  output gained a Record block and prints the reason under the status.
+
+### Changed — behaviour
+
+- **An unresolvable signing key is now `UNVERIFIABLE`, not `ERROR`.** It was
+  previously indistinguishable from a network failure, and the CLI printed
+  *"the record may have been tampered with"* for it. An unknown kid means this
+  verifier was handed a JWKS without the key — the record may be entirely
+  valid against a JWKS it has never seen. Cannot-verify is not proven-wrong,
+  and reporting it as tampering is a false accusation. `UNVERIFIABLE` renders
+  amber, never red, matching the Proof Explorer's four-state vocabulary.
+
+  A non-Ed25519 candidate key is likewise `UNVERIFIABLE` /
+  `UNSUPPORTED_ALGORITHM` rather than a failed signature check, because no
+  signature check runs.
+
+- **`ERROR` now splits by reason:** `RECORD_NOT_FOUND` (the record does not
+  exist) versus `TRANSPORT_ERROR` (the endpoint was unreachable, so nothing is
+  established either way). `verificationStatus` stays `ERROR` for both.
+
+- **The CLI's failure text no longer says "may have been tampered with" for
+  every non-VERIFIED outcome.** A genuine `SIGNATURE_INVALID` now states what
+  actually happened: a key resolved and the signature did not verify.
+
+### Not changed
+
+- `hashValid` keeps its long-standing meaning. In SE v1 `evidenceHash` is a
+  field *inside* the signed canonical payload, authenticated by the signature —
+  it is **not** `sha256(signing envelope)`, and was never claimed to be. So the
+  arithmetic check (`payloadSelfConsistent`) is expected to be `false` on a
+  perfectly valid record, and is therefore reported as a `--json` diagnostic
+  rather than as a pass/fail line. Rendering it as a failed check beside a
+  `VERIFIED` status would train readers to distrust valid records.
+
+  In the human output, `Hash valid` now reads `not checked` when no signing key
+  resolved, rather than a red `false` — nothing was evaluated.
+- `chainValid` stays `null` for single-record verification, now with a reason.
+  Chain linkage is a property of a record *pair*; a `false` meaning "we did not
+  look" would be worse than the gap. Walk the chain with
+  `GET /api/public/verify/chain`.
+
+Tests: `test/verification-contract.test.mjs` — 10 cases over a real local HTTP
+server with real Ed25519 keys and real signatures, covering VERIFIED, tampered
+payload, unknown key, non-Ed25519 key, legacy unsigned, mixed legacy/signed,
+key rotation with and without retention, record-not-found, and transport error.
+
+## [1.21.0] — 2026-07-30
+
+### Added
+
+- **`strix-verify agent-session <bundle.json> [--jwks <path>]` — independent
+  governed-agent-session verification** (`src/agent-session.mjs` + exported
+  `verifyAgentSessionBundle`, `computeSessionRoot`). Verifies a hash-chained
+  `agent_navigation_evidence_v1` session sealed under a `run_commitment_v1`
+  of runKind `agent_session`, entirely offline: re-derives every event's
+  content address from the SCJ v1 canonical bytes of its payload, walks the
+  `previousEventHash` chain, re-derives the RFC 6962 Merkle root from the
+  presented events, and checks the commitment's Ed25519 signature. Detects
+  edited, removed, reordered, duplicated, and inserted events — including a
+  fully **re-chained** forgery in which every local check passes and only
+  the signed root disagrees.
+
+  **Zero shared code with the producer**
+  (`solo-builder-core/src/agent-navigation-evidence-v1.ts`): its own
+  SCJ-v1-compatible canonicalization, its own content addressing, its own
+  chain walk, and its own Merkle implementation. Agreement is a conformance
+  result, not a shared-code artifact — pinned by replaying the producer's
+  locked golden bundle in `test/agent-session.test.mjs` (26 tests).
+
+  Two honesty boundaries print on **every** verdict and are structurally
+  present on every result object:
+  - `completeness: "NOT_PROVEN"` — the verdict proves the presented events
+    are the ones sealed under the signed root, in that order, unedited. It
+    cannot prove the agent recorded everything it did.
+  - `provesReviewCorrectness: false` — findings travelling in the bundle are
+    a model's opinion. They are re-checked for **binding** only (does each
+    finding cite a screen the agent actually visited, with that screen's own
+    screenshot digest?) and reported separately in `findingsBinding`. A
+    bogus finding never changes the session verdict, and a clean findings
+    set never rescues a tampered session.
+
+  Without `--jwks` the verdict caps at `UNVERIFIABLE`, never `INVALID`
+  (NAV-7 — "cannot verify" is not "proven wrong"). Exit codes: `0`
+  VERIFIED, `1` INVALID, `2` usage/IO error, `3` UNVERIFIABLE. The exit
+  code is the worst of session integrity and finding binding.
+
+- `./agent-session` subpath export in `package.json`, and
+  `src/agent-session.mjs` + its test + golden fixture registered in
+  `scripts/sync-verifier-to-public-release.mjs` `MIRROR_FILES` (a subcommand
+  the public tree cannot resolve is not mirrored).
+
+### Notes
+
+- No change to any existing canonicalization, verdict, or reason code. The
+  producer-side addition of `agent_session` to `run_commitment_v1`'s
+  `RUN_KINDS` does not alter the canonical bytes of any existing commitment
+  (`runKind` is a string field), and the locked `run_commitment_v1` goldens
+  are unchanged and still pass.
+
 ## [1.20.0] — 2026-07-22
 
 ### Added

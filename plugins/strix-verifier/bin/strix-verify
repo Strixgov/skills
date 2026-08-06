@@ -18,7 +18,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PLUGIN_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 
 VENDORED="$PLUGIN_ROOT/vendor/strixgov-verifier/bin/verify.mjs"
-VERSION="${STRIX_VERIFIER_VERSION:-1.20.0}"
+VERSION="${STRIX_VERIFIER_VERSION:-1.22.0}"
 
 if [ "${STRIX_VERIFIER_FORCE_NPX:-0}" != "1" ] && [ -f "$VENDORED" ]; then
   exec node "$VENDORED" "$@"

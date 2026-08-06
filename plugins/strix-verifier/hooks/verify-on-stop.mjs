@@ -66,7 +66,7 @@ try {
   args = [vendored, ...targetArgs, "--json"];
 } catch {
   cmd = "npx";
-  args = ["-y", `@strixgov/verifier@${config.verifierVersion || "1.20.0"}`, ...targetArgs, "--json"];
+  args = ["-y", `@strixgov/verifier@${config.verifierVersion || "1.22.0"}`, ...targetArgs, "--json"];
 }
 
 const res = spawnSync(cmd, args, { encoding: "utf8", timeout: 20000 });

@@ -500,7 +500,51 @@ export function verifyHash(canonicalPayload, expectedHash) {
 }
 
 /**
+ * Machine-readable reason codes for an SE v1 verification outcome. Stable
+ * public contract: codes are additive only — never renamed, never reused.
+ *
+ * `verificationStatus` answers "can I rely on this record?" in four words.
+ * `verificationReason` answers "why?" precisely enough to act on. The pair
+ * exists because collapsing them loses the distinction that matters most:
+ * SIGNING_KEY_UNKNOWN and SIGNATURE_INVALID are both "not VERIFIED", and
+ * only one of them means someone tampered with something.
+ */
+export const VERIFICATION_REASONS = Object.freeze({
+  SIGNATURE_VALID: "All required verification layers passed.",
+  LEGACY_UNSIGNED:
+    "Pre-Signed-Evidence-v1 record. No signature was ever produced; provenance cannot be established.",
+  SIGNATURE_ABSENT:
+    "The record claims to be signed but carries no signing key id, so no signature can be checked.",
+  SIGNING_KEY_UNKNOWN:
+    "The signing key id does not resolve in the presented JWKS. Cannot verify — this is NOT evidence of tampering.",
+  UNSUPPORTED_ALGORITHM:
+    "A candidate key is not Ed25519. Strix signs SE v1 exclusively with Ed25519; a non-Ed25519 key is never used to verify.",
+  SIGNATURE_INVALID:
+    "A signing key resolved, and the signature did not verify over the canonical payload. The record does not match what was signed.",
+  RECORD_NOT_FOUND: "No record with this identifier exists on the proof surface.",
+  TRANSPORT_ERROR:
+    "The proof or JWKS endpoint could not be reached. Nothing about the record's validity is established either way.",
+});
+
+/**
+ * Reasons `chainValid` is null. The proof-chain link is a property of a record
+ * PAIR; a single-record verification structurally cannot establish it, and
+ * reporting `false` for "we did not look" would be worse than the gap.
+ */
+export const CHAIN_REASONS = Object.freeze({
+  NOT_CHECKED_SINGLE_RECORD:
+    "Chain linkage is not evaluated by single-record verification. proofChainHash is authenticated as a signed field, but confirming it links to the true predecessor requires the predecessor. Walk the chain with GET /api/public/verify/chain.",
+  NOT_APPLICABLE_UNSIGNED:
+    "Record is unsigned, so its chain hash is not authenticated and linkage is not meaningful.",
+  ABSENT: "The record carries no proofChainHash.",
+});
+
+/** SE v1 record type marker surfaced on every result. */
+const RECORD_TYPE_SE_V1 = "signed_evidence_v1";
+
+/**
  * Full end-to-end verification of an evidence record.
+ *
  * @param {number|string} evidenceId
  * @param {object} [options]
  * @param {string} [options.proofBase]
@@ -513,40 +557,91 @@ export async function verify(evidenceId, options = {}) {
 
   const result = {
     evidenceId,
+    recordType: null,
+    schemaVersion: null,
     hashValid: false,
-    chainValid: null, // null = not checked (would need previous record)
+    /**
+     * DIAGNOSTIC ONLY — does the record's `evidenceHash` field happen to equal
+     * sha256(canonical payload)?
+     *
+     * For SE v1 the answer is normally **false, and that is correct**:
+     * `evidenceHash` addresses the underlying governance decision content and
+     * is a field INSIDE the signed payload, authenticated by the signature. It
+     * is not the digest of the signing envelope, and SE v1 never claimed it
+     * was. This is surfaced in `--json` for tooling that wants the datum, and
+     * deliberately NOT rendered as a pass/fail check in the human output —
+     * showing a red ✗ beside a VERIFIED record would train the reader to
+     * distrust valid records, which is a worse outcome than not reporting it.
+     *
+     * Never gate on this. `signatureValid` is the integrity gate.
+     */
+    payloadSelfConsistent: null,
+    chainValid: null,
+    chainReason: null,
     signaturePresent: false,
     signatureValid: false,
+    signatureAlgorithm: null,
     verificationStatus: "UNKNOWN",
+    verificationReason: null,
     record: null,
     error: null,
+  };
+
+  const settle = (status, reason) => {
+    result.verificationStatus = status;
+    result.verificationReason = reason;
+    result.verificationReasonText = VERIFICATION_REASONS[reason] ?? null;
+    return result;
   };
 
   try {
     // Step 1: Fetch the evidence record
     const record = await fetchEvidence(evidenceId, proofBase);
     result.record = record;
+    result.schemaVersion = record.schemaVersion ?? null;
 
     // Step 2: Check if signature is present
     result.signaturePresent = !!record.signature;
+    result.recordType = record.signature ? RECORD_TYPE_SE_V1 : "legacy_unsigned";
 
     if (!record.signature || !record.signingKeyId) {
-      result.verificationStatus = record.signature
-        ? "UNSIGNED"
-        : "LEGACY_UNSIGNED";
-      return result;
+      result.chainReason = CHAIN_REASONS.NOT_APPLICABLE_UNSIGNED;
+      return record.signature
+        ? settle("UNSIGNED", "SIGNATURE_ABSENT")
+        : settle("LEGACY_UNSIGNED", "LEGACY_UNSIGNED");
     }
+
+    result.chainReason = record.proofChainHash
+      ? CHAIN_REASONS.NOT_CHECKED_SINGLE_RECORD
+      : CHAIN_REASONS.ABSENT;
 
     // Step 3: Fetch all public keys matching the kid (kid collisions are
     // legitimate per RFC 7517; first-match resolution misses one side of
     // the Phase 2 closure scenario where Academy's retired key + strix-
     // platform's active key share kid "strix-prod-2026-05").
-    const publicKeys = await fetchPublicKeys(record.signingKeyId, jwksBase);
+    //
+    // An unresolvable kid is NOT a failed signature. It means this verifier
+    // was handed a JWKS that does not contain the key — the record may be
+    // perfectly valid against a JWKS it has never seen. Floor at UNVERIFIABLE,
+    // never INVALID (the SA-4 discipline: cannot verify != proven wrong).
+    let publicKeys;
+    try {
+      publicKeys = await fetchPublicKeys(record.signingKeyId, jwksBase);
+    } catch (err) {
+      if (/Key not found in JWKS/.test(err.message)) {
+        return settle("UNVERIFIABLE", "SIGNING_KEY_UNKNOWN");
+      }
+      if (/Unexpected key type/.test(err.message)) {
+        return settle("UNVERIFIABLE", "UNSUPPORTED_ALGORITHM");
+      }
+      throw err;
+    }
 
     // Step 4: Build canonical payload
     const canonical = buildCanonicalPayload(record);
 
     // Step 5: Verify against each candidate until one passes
+    result.signatureAlgorithm = "Ed25519";
     let signatureValid = false;
     for (const pk of publicKeys) {
       if (verifySignature(canonical, record.signature, pk)) {
@@ -556,26 +651,36 @@ export async function verify(evidenceId, options = {}) {
     }
     result.signatureValid = signatureValid;
 
-    // Step 6: Compute the canonical payload hash for transparency only.
-    // evidenceHash is the hash of the underlying governance decision content —
-    // it is a field INSIDE the canonical payload and is authenticated by the
-    // Ed25519 signature. SHA-256(signing_envelope) !== evidenceHash by design;
-    // the signature check is the sole integrity gate.
-    result.hashValid = result.signatureValid; // authenticated by signature
+    // Step 6: `hashValid` is retained at its long-standing meaning — the
+    // canonical payload's integrity, which in SE v1 is established by the
+    // signature and nothing else. `payloadSelfConsistent` is the genuinely
+    // independent check and is reported beside it.
+    result.hashValid = result.signatureValid;
+    result.payloadSelfConsistent = checkPayloadSelfConsistency(record, canonical);
 
-    // Determine status
-    if (result.signatureValid) {
-      result.verificationStatus = "VERIFIED";
-    } else {
-      result.verificationStatus = "COMPLIANCE_VIOLATION";
-    }
+    return signatureValid
+      ? settle("VERIFIED", "SIGNATURE_VALID")
+      : settle("COMPLIANCE_VIOLATION", "SIGNATURE_INVALID");
   } catch (err) {
     result.error = err.message;
-    result.verificationStatus = "ERROR";
     if (err?.url) result.attemptedUrl = err.url;
+    const notFound = /No record|not found|HTTP 404/i.test(err.message ?? "");
+    return settle("ERROR", notFound ? "RECORD_NOT_FOUND" : "TRANSPORT_ERROR");
   }
+}
 
-  return result;
+/**
+ * Re-derive sha256 over the canonical payload and compare to the record's own
+ * `evidenceHash`. Returns null when the record does not carry one.
+ *
+ * This is reported, never gating. In SE v1 `evidenceHash` addresses the
+ * underlying governance decision content, so it is not expected to equal
+ * sha256(signing envelope) — a mismatch here is informational, and the
+ * signature remains the sole integrity gate.
+ */
+function checkPayloadSelfConsistency(record, canonicalPayload) {
+  if (!record?.evidenceHash) return null;
+  return verifyHash(canonicalPayload, record.evidenceHash);
 }
 
 // =============================================================================

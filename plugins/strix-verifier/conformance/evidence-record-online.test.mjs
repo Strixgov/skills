@@ -142,7 +142,17 @@ test("online: proof API 500 -> ERROR with the HTTP status in the message", async
   }
 });
 
-test("online: signingKeyId not present in JWKS -> ERROR (key not found), never a false VERIFIED", async () => {
+// Embedded verifier 1.22.0 deliberately reclassified this case ERROR →
+// UNVERIFIABLE (see vendor/strixgov-verifier/CHANGELOG.md, "An unresolvable
+// signing key is now UNVERIFIABLE, not ERROR"): an unknown kid means this
+// verifier was handed a JWKS without the key, and the record may be entirely
+// valid against a JWKS it has never seen. Cannot-verify is not proven-wrong.
+// This assertion previously encoded the pre-1.22 behaviour and is updated to
+// the new contract — and strengthened, because the point of the change is the
+// REASON, not the status word: it now pins SIGNING_KEY_UNKNOWN specifically,
+// so a future regression that collapsed it back into a generic failure (or
+// into SIGNATURE_INVALID, the false accusation) fails here.
+test("online: signingKeyId not present in JWKS -> UNVERIFIABLE/SIGNING_KEY_UNKNOWN, never VERIFIED and never a tamper claim", async () => {
   const server = await startServer({
     "/api/proof/1": { body: { evidenceId: "1", schemaVersion: "1", signedPayload: CANONICAL, signature: SIGNATURE, signingKeyId: "unknown-kid-2099" } },
     "/.well-known/strix-jwks.json": { body: GOOD_JWKS },
@@ -150,8 +160,11 @@ test("online: signingKeyId not present in JWKS -> ERROR (key not found), never a
   try {
     const url = baseUrl(server);
     const r = await verify("1", { proofBase: url, jwksBase: url });
-    assert.equal(r.verificationStatus, "ERROR");
-    assert.match(r.error, /Key not found in JWKS/);
+    assert.equal(r.verificationStatus, "UNVERIFIABLE");
+    assert.equal(r.verificationReason, "SIGNING_KEY_UNKNOWN");
+    // Cannot-verify must never be dressed as a verdict in either direction.
+    assert.notEqual(r.verificationStatus, "VERIFIED");
+    assert.notEqual(r.verificationStatus, "SIGNATURE_INVALID");
   } finally {
     server.close();
   }

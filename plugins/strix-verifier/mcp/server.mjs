@@ -28,10 +28,10 @@ try {
 } catch {
   /* defaults below */
 }
-const PINNED = CONFIG.verifierVersion || "1.20.0";
+const PINNED = CONFIG.verifierVersion || "1.22.0";
 
 const PROTOCOL_VERSION = "2025-06-18";
-const SERVER_INFO = { name: "strix-verifier", version: "1.20.0" };
+const SERVER_INFO = { name: "strix-verifier", version: "1.22.0" };
 
 const TOOLS = [
   {
