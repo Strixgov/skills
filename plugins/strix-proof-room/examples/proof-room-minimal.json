@@ -1,0 +1,35 @@
+{
+  "proofRoomVersion": "1.0",
+  "roomId": "minimal-example",
+  "title": "Strix Proof Room — minimal example",
+  "status": "ACTIVE",
+  "createdAt": "2026-06-30T00:00:00.000Z",
+  "expiresAt": "2030-12-31T23:59:59.000Z",
+  "revokedAt": null,
+  "recipientScope": "public",
+  "evidenceReferences": [
+    {
+      "sourceType": "evidence",
+      "sourceId": "5686",
+      "verificationUrl": "https://www.strixgov.com/api/public/proof/5686"
+    }
+  ],
+  "claims": [
+    {
+      "claimId": "governed-action-proven",
+      "text": "A governed action was executed and left an independently verifiable Ed25519 receipt.",
+      "status": "PROVEN",
+      "sourceEvidenceIds": ["5686"]
+    },
+    {
+      "claimId": "swarm-attestation-roadmap",
+      "text": "Per-agent swarm delegation attestation for this room.",
+      "status": "ROADMAP",
+      "sourceEvidenceIds": []
+    }
+  ],
+  "analyticsPolicy": {
+    "consentRequired": true,
+    "rawPiiAllowed": false
+  }
+}

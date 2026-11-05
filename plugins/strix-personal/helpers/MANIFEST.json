@@ -1,0 +1,26 @@
+{
+  "helpers": {
+    "governedAction.local.ts": {
+      "bytes": 111095,
+      "sha256": "283f4c27c98c5cd76908f26376a7c5ff0993db7a45a9dfbb76930a8bca26a8da",
+      "version": "1.0.0"
+    },
+    "governedAction.ts": {
+      "bytes": 22895,
+      "sha256": "a1db2cccfa25438a49e918064af16e463267c419707cfc40b6df40f301f924ea",
+      "version": "1.0.0"
+    },
+    "governed_action.py": {
+      "bytes": 21832,
+      "sha256": "9680bf0e2aa57d06e40f15a08c0011eedc94671346b64429de338252378ae9d2",
+      "version": "1.0.0"
+    },
+    "governed_action_local.py": {
+      "bytes": 111941,
+      "sha256": "fc12c51a905d34759f884536ad8cfa0d27adfc777ecd854a72cad3dc4a144903",
+      "version": "1.0.0"
+    }
+  },
+  "note": "Expected digests for the /strix-wire helper files. Regenerate with scripts/generate_strix_wire_helper_manifest.py and commit the change together with the helper edit that caused it.",
+  "schemaVersion": "strix.wire.helper-manifest.v1"
+}

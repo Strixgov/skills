@@ -9,6 +9,31 @@ first governed, recorded action.
 **MIT-licensed, runs locally, no Strix account required.** The three review
 lenses are advisory by construction — they read and report, they never enforce.
 
+## The Strix marketplace
+
+This repository is the **one public Strix plugin marketplace** (name
+`strixgov`). Add it once, then install what you need:
+
+```
+/plugin marketplace add Strixgov/skills
+```
+
+| Plugin | Install | Use it when |
+|---|---|---|
+| `strix-personal` | `/plugin install strix-personal@strixgov` | You want execution control on your own project: scan for consequential actions, wrap the risky ones, test that the wrap governs, and track status (`/strix-personal:strix-scan` → `:strix-plan` → `:strix-apply` → `:strix-test` → `:strix-status`). |
+| `strix-governance` | `/plugin install strix-governance@strixgov` | You want an advisory governance review of a system, a PR, or a release, or a one-shot first governed action (`/strix-governance:strix-wire`). |
+| `strix-verifier` | `/plugin install strix-verifier@strixgov` | You want to check a Strix record yourself, offline-capable, without trusting Strix. |
+| `strix-proof-room` | `/plugin install strix-proof-room@strixgov` | You want to publish a self-verifying proof page for a set of records. |
+
+How they fit: Strix's products control what AI can **do** (execution control)
+and what AI can **receive** (governed AI egress). `strix-personal` is the
+hands-on execution-control path, `strix-governance` is the review layer,
+`strix-verifier` is independent verification, and `strix-proof-room` publishes
+proof. All are MIT-licensed and need no Strix account. The plugins render or
+check proof; none of them decides a verdict for you.
+
+The rest of this page describes the `strix-governance` skills.
+
 ## What's inside
 
 | Skill | Lens | What it does |

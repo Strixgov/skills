@@ -1,0 +1,134 @@
+#!/usr/bin/env node
+/**
+ * strix-proof-room — render a Strix Proof Room manifest to a standalone HTML page.
+ *
+ * Self-contained: bundles the MIT `@strixgov/proof-fabric-drop-adapter`
+ * (lib/drop-adapter.mjs, vendored verbatim). The adapter renders proof; it
+ * never determines a verdict — every record becomes a live `<strix-verify>`
+ * embed that re-derives its own verdict in the browser. No Strix account, SDK,
+ * or API key.
+ *
+ *   strix-proof-room <manifest.json> [--out room.html] [--title "..."]
+ *   strix-proof-room --example [--out room.html]   # render the bundled minimal example
+ *
+ * With no --out the HTML goes to stdout. Exit: 0 rendered · 1 bad/invalid
+ * manifest · 2 usage error.
+ */
+import { readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { renderRoomHtml } from '../lib/drop-adapter.mjs';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const EXAMPLE = join(HERE, '..', 'examples', 'proof-room-minimal.json');
+
+function fail(code, msg) {
+  process.stderr.write(`strix-proof-room: ${msg}\n`);
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const args = { manifest: null, out: null, title: null, example: false, help: false };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--out' || a === '-o') args.out = argv[++i] ?? null;
+    else if (a === '--title') args.title = argv[++i] ?? null;
+    else if (a === '--manifest' || a === '-m') args.manifest = argv[++i] ?? null;
+    else if (a === '--example') args.example = true;
+    else if (a === '--help' || a === '-h') args.help = true;
+    else if (a.startsWith('-')) fail(2, `unknown flag "${a}"`);
+    else if (!args.manifest) args.manifest = a;
+    else fail(2, `unexpected argument "${a}"`);
+  }
+  return args;
+}
+
+const USAGE =
+  'Usage: strix-proof-room <manifest.json> [--out room.html] [--title "..."]\n' +
+  '       strix-proof-room --example [--out room.html]';
+
+function pageTitle(manifest, override) {
+  if (override) return override;
+  if (typeof manifest.title === 'string' && manifest.title) return manifest.title;
+  return `Strix Proof Room — ${manifest.roomId ?? 'room'}`;
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function htmlDocument(title, fragment) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>${escapeHtml(title)}</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 52rem; margin: 3rem auto; padding: 0 1.25rem; }
+  .strix-proof-room header h1 { font-size: 1.5rem; margin-bottom: .25rem; }
+  .strix-roadmap, .strix-boundaries { opacity: .75; border-left: 3px solid currentColor; padding-left: 1rem; margin: 1rem 0; }
+  .strix-room-closed { border: 1px solid currentColor; border-radius: .5rem; padding: 1rem; }
+  .strix-cta { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid rgba(128,128,128,.4); }
+  code { background: rgba(128,128,128,.18); padding: .1rem .35rem; border-radius: .25rem; }
+</style>
+</head>
+<body>
+${fragment}
+</body>
+</html>
+`;
+}
+
+function main() {
+  const args = parseArgs(process.argv.slice(2));
+  if (args.help || (!args.manifest && !args.example)) {
+    process.stdout.write(USAGE + '\n');
+    process.exit(args.help ? 0 : 2);
+  }
+
+  const path = args.example ? EXAMPLE : args.manifest;
+  let raw;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (e) {
+    fail(1, `cannot read manifest "${path}": ${e.message}`);
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(raw);
+  } catch (e) {
+    fail(1, `manifest is not valid JSON: ${e.message}`);
+  }
+
+  let fragment;
+  try {
+    // renderRoomHtml runs validateForRender (PF-3/PF-5 claim binding) +
+    // resolveRoomAccess (ACTIVE/EXPIRED/REVOKED) before producing any HTML.
+    fragment = renderRoomHtml(manifest);
+  } catch (e) {
+    fail(1, e.message);
+  }
+
+  const doc = htmlDocument(pageTitle(manifest, args.title), fragment);
+
+  if (args.out) {
+    try {
+      writeFileSync(args.out, doc);
+    } catch (e) {
+      fail(1, `cannot write "${args.out}": ${e.message}`);
+    }
+    process.stderr.write(`strix-proof-room: wrote ${args.out}\n`);
+  } else {
+    process.stdout.write(doc);
+  }
+}
+
+main();

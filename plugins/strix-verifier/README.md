@@ -12,13 +12,15 @@ trust path: you reproduce the verdict yourself from public proof material + keys
 ## Install
 
 ```
-/plugin marketplace add Strixgov/strix
+/plugin marketplace add Strixgov/skills
 /plugin install strix-verifier@strixgov
 ```
 
-The marketplace lives at the root of the public mirror
-[`github.com/Strixgov/strix`](https://github.com/Strixgov/strix)
-(`.claude-plugin/marketplace.json`); `strixgov` is the marketplace name.
+The marketplace is the public repository
+[`github.com/Strixgov/skills`](https://github.com/Strixgov/skills)
+(`.claude-plugin/marketplace.json`); `strixgov` is the marketplace name. It is
+the one public Strix marketplace. The verifier's package source is mirrored
+separately at [`github.com/Strixgov/strix`](https://github.com/Strixgov/strix).
 
 ## In a restricted or sandboxed environment (read this first if you hit a 403)
 
