@@ -2,7 +2,7 @@
 // Reproducibly (re-)vendor the published @strixgov/verifier into vendor/.
 //
 //   node scripts/vendor-verifier.mjs            # vendor the pinned version from config.json
-//   node scripts/vendor-verifier.mjs 1.22.0     # vendor an explicit version
+//   node scripts/vendor-verifier.mjs 1.24.0     # vendor an explicit version
 //
 // What it does: `npm pack @strixgov/verifier@<version> --json`, extracts the
 // tarball into vendor/strixgov-verifier/, and writes vendor/PROVENANCE.json

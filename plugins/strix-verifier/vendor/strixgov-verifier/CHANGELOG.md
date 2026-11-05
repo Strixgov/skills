@@ -5,6 +5,72 @@ All notable changes to `@strixgov/verifier` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.1] — 2026-09-10
+
+### Fixed
+
+- **`device-attestation.d.ts` declared a return shape `renderDeviceClassBlock`
+  never produced.** Runtime returns `{ claimedClass, verified,
+  verificationReason, attestationProtocol }`; the published type declared
+  `{ attested, verified, reason, deviceClass, attestationProtocol }`. The
+  fix landed on `main` 2026-09-06 but the version was never bumped, so
+  `1.24.0` shipped the stale declaration to every TypeScript consumer of the
+  `/device-attestation` subpath. Types-only republish; no runtime change.
+## [1.24.0] — 2026-08-28
+
+### Added
+
+- **`@strixgov/verifier/device-attestation`** — the AA-2 (Device Attestation
+  v1) verifier: the 9-rule ADR-016 evaluation, the 12 `aa2_` reason codes, and
+  the locked 3-pair DEVICE-PRE-2 matrix, conformance-locked against the 15
+  published vectors. Zero shared code with the producer.
+
+### Fixed
+
+- **The AA-2 verifier was unshippable and nothing said so.** `src/device-attestation.mjs`
+  and its `./device-attestation` export landed in this package after 1.23.0 was
+  published (1.23.0 was cut for the Physical Approval Bridge) and the version was
+  never bumped — so the module existed in the repository and in the public mirror
+  while `@strixgov/verifier@1.23.0` on npm carried neither the file nor the export
+  declaration. Anyone importing the documented subpath got "package subpath not
+  exported".
+
+  `lint-distribution-truth --registry` reported the package LIVE and in sync
+  throughout, because it compares VERSIONS and the repository version already
+  equalled the published one. The AA-2 lane's mirror-registration check was green
+  for the same reason it was designed to be: the files are in `MIRROR_FILES`, and
+  reaching the mirror is not reaching npm. Both gates were honest about what they
+  measured and neither measured publishability — see the new EXPORT_MISSING check
+  in `scripts/lint-distribution-truth.mjs`.
+
+## [1.23.0] — 2026-08-21
+
+### Added
+
+- **`strix-verify physical-approval --proof <bundle.json>`** — independent,
+  fully offline verification of a Physical Approval Bridge v1 record from the
+  TENANT-AUTHENTICATED proof bundle
+  (`GET /api/v1/physical-approval/requests/<requestId>/proof`). Fetching a
+  bare `<requestId>` from the PUBLIC projection reports lifecycle facts, the
+  server-derived status, and the assurance block, then explains that the
+  public surface is REDACTED BY CONSTRUCTION (its signed bytes would expose
+  tenant/approver/actor/device identifiers) and points at the bundle — it
+  never fakes a verification it cannot perform. Bundle verification
+  re-derives the verdict with this package's own canonicalization,
+  content addressing, confirmation fingerprint, and Ed25519 verification
+  (`src/physical-approval.mjs` — zero shared code with the producer; the
+  producer's locked golden vectors are replayed as a conformance pin).
+  Honest boundary printed on every verdict: the result attests SIGNATURE +
+  BINDING between the presented request and response only — never approver
+  presence, organizational authority, quorum, or execution (those live in
+  kernel records with their own verifiers: `strix-verify quorum`,
+  `strix-verify <evidenceId>`). A missing device key caps at UNVERIFIABLE,
+  never INVALID.
+- New exports-map subpath **`@strixgov/verifier/physical-approval`**
+  (`verifyPhysicalApproval`, `derivePhysicalApprovalFingerprint`,
+  `canonicalizePhysicalApproval`, `physicalApprovalContentAddress`,
+  `PHYSICAL_APPROVAL_REASONS`).
+
 ## [1.22.0] — 2026-08-01
 
 ### Added

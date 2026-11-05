@@ -374,11 +374,12 @@ import {
   computeAttestationCompositeStatus,
   verifyWithAttestations,
 
-  // Actor attestations (preview — not in this release)
-  //   The function below is exported for forward compatibility but is
-  //   not yet operational on the public verification surface. Cryptographic
-  //   agent identity will ship in a subsequent release alongside the MCP
-  //   gateway tooling. See the "Standards alignment" table for status.
+  // Actor attestations (payload builder only — verification lives elsewhere)
+  //   The capability itself has SHIPPED (AARM Core R6, live in production
+  //   since 2026-07-11). What this package provides is the canonical payload
+  //   builder, so a third party can reconstruct the exact signed bytes.
+  //   It exports no verify function and no CLI subcommand for attestations —
+  //   use `verifyActorAttestation` from `@strixgov/sdk` to check one.
   buildActorAttestationPayload,
 
   // Tool-gateway receipts + chains
@@ -502,31 +503,62 @@ at execution time. The full specification text lives at
 [aarm.dev](https://aarm.dev/) (donated to CSA by Vanta, paper [arXiv:2602.09433](https://arxiv.org/abs/2602.09433)).
 
 `@strixgov/verifier` is a **public reference implementation of AARM
-Core R6** — tamper-evident receipts independently verifiable using
-Ed25519 + JWKS, with no vendor trust path. The verifier covers Core
-R1–R6 in full, with the next milestones (walk-to-genesis chain
-verification + cryptographic agent identity binding) on the published
-roadmap.
+Core R5** — tamper-evident receipts independently verifiable using
+Ed25519 + JWKS, with no vendor trust path.
 
-### AARM Core (R1–R6) — alignment map
+**Core R6 (identity binding) has shipped, but not in this package.**
+This package exports `buildActorAttestationPayload` — the canonical
+payload builder, so a third party can reconstruct the exact signed
+bytes — and nothing else for R6: there is no verify function and no
+CLI subcommand here. Verification of an actor attestation lives in
+`@strixgov/sdk` (`verifyActorAttestation`, 8 rules / 11 reason codes).
+
+The map below rates the **Strix platform**, not this package alone: a
+verifier verifies, it does not intercept execution or evaluate policy.
+Where a row is satisfied by a sibling package, the row says so.
+
+> **Numbering note.** An earlier revision of this README mapped R5 to
+> "enforcement (allow / deny / defer)" and R6 to "tamper-evident
+> receipts," and listed identity binding as an unshipped *Extended*
+> capability. AARM has since renumbered. The tables below follow the
+> current published spec, in which **R5 is tamper-evident receipts** and
+> **R6 is identity binding** — and identity binding has shipped.
+
+### AARM Core (R1–R6, MUST) — alignment map
 
 | AARM Core Requirement | Strix implementation | Alignment |
 |---|---|---|
 | **R1 — Pre-execution interception** | Execution Boundary wraps every governed capability; mutations don't run until evaluation completes. | ✅ Full |
 | **R2 — Context accumulation** | Canonical 13-field payload binds session, environment, tenant, actor, and capability into a single SHA-256 hash. | ✅ Full |
 | **R3 — Policy evaluation with intent alignment** | Deterministic, content-addressable PolicyEngine (`sha256:…` version hash from canonical rule set). Same inputs → same decision, every time. | ✅ Full |
-| **R4 — Authorization decision** | Single-use, payload-bound, scope-bound execution tokens. 5-minute default TTL. Atomic redemption. Revocable mid-flight. | ✅ Full |
-| **R5 — Enforcement (allow / deny / defer)** | Hard fail-closed enforcement; handler is never invoked if any check fails. Approval/defer for HIGH/CRITICAL. | ✅ Full |
-| **R6 — Tamper-evident receipts** | Ed25519-signed evidence records, locked 13-field canonical payload, SHA-256 hash chain. Reordering any field invalidates every signature. | ✅ Full |
+| **R4 — Authorization decisions** | Three of AARM's five decision values ship as first-class outcomes: allow, deny, and step-up (with quorum, self-approval refusal, payload-bound re-approval). The authority itself is a single-use, payload-bound, scope-bound token — 5-minute default TTL, atomic redemption, revocable mid-flight. **DEFER** exists as durable state rather than a verdict. **MODIFY** is deliberately absent. See the note below. | ⚠️ 3 of 5 |
+| **R5 — Tamper-evident receipts** | Ed25519-signed evidence records, locked 13-field canonical payload, SHA-256 hash chain. Reordering any field invalidates every signature. This package is the public reference implementation, and two further independent implementations must agree with it on a byte-locked corpus or the build fails. | ✅ Full |
+| **R6 — Identity binding** | Agent actor attestation ships as a sibling artifact joined to the evidence record and signed by the producer that holds the agent key — the console validates and persists but never signs, so a call site cannot mint its own identity. Live in production since 2026-07-11. Verified by `@strixgov/sdk`, **not** by this package — see above. **Ceiling:** closes a lying call site and a credential-class mismatch; does *not* cover an agent driving an authenticated human's browser session, which is a separate unbuilt capability. No claim of detecting AI impersonation of users is authorized. | ✅ Full — verified in a sibling package |
 
-### AARM Extended — alignment map
+**On R4.** The two absent decision values are positions, not oversights.
+`DEFER` is modeled as durable state because a verdict meaning "not yet"
+belongs to a state machine rather than a policy engine. `MODIFY` is
+refused because authorization binds to the payload's content address —
+a modified payload is structurally a *new* proposal, and mutate-and-resume
+would break the binding that makes the receipt meaningful. Both are open
+to challenge, which is why they are published as a rating rather than a
+checkmark.
 
-| AARM Extended capability | Strix implementation | Alignment |
+### AARM Extended (R7–R9, SHOULD) — alignment map
+
+| AARM Extended requirement | Strix implementation | Alignment |
+|---|---|---|
+| **R7 — Semantic distance tracking** | A sequence-divergence detector runs over a declared list of sensitive action pairs and emits an advisory signal when a run departs from it. Live in production; the signal vocabulary has no permissive member, so a signal can only ever tighten a verdict. **Not** semantic distance in an embedding sense — this measures divergence from a declared list, not from an inferred intent. | ⚠️ Partial |
+| **R8 — Telemetry export** | Governed export of already-signed rows into a content-addressed manifest that is explicitly *unsigned* and carries `completeness: NOT_PROVEN` — it never claims to be the whole record. Each row's own signature is re-verified rather than trusted from a presented verdict. Protected classifications are barred fail-closed, and an *unknown* classification is treated as protected. | ✅ Full |
+| **R9 — Least privilege enforcement** | Exact-match capability scope, single-use tokens, monotonic attenuation (a child grant is a strict subset of its parent on every axis; widening is refused by name), and exhaustible budgets re-derived from persisted history at point of use rather than read from a counter. | ✅ Full |
+
+### Additional capabilities beyond the AARM requirement set
+
+| Capability | Strix implementation | Alignment |
 |---|---|---|
 | Approval workflows & quorum | Phase 3 approval artifacts (9-field canonical) + quorum verification with chain continuity. `strix-verify approval <id>` and `strix-verify quorum <id>` exercise this. | ✅ Full |
 | Forensic reconstructibility / offline verification | Public JWKS at `/.well-known/strix-jwks.json` (2-year retention). Tool-gateway receipts + chains verify against a local JWKS file with no network access. | ✅ Full |
 | Receipt chaining & auditability | `proofChainHash` cryptographically bound in every Ed25519-signed payload; per-record link integrity verifies today. Walk-to-genesis traversal is on the public-API roadmap. | ✅ Per-record · ⚠️ Walk-to-genesis on roadmap |
-| Identity binding & actor attestations | Cryptographically verifiable agent identity is a planned future capability. It will ship in a subsequent release alongside the MCP gateway tooling. The current verifier package covers AARM Core R1–R6 in full; identity binding is the largest of the AARM Extended capabilities and is the next milestone on the roadmap. | 🔜 Future release |
 
 **Status disclaimer.** "Aligned" in registry terms means the
 implementation maps to AARM's written runtime-governance criteria — it
@@ -534,8 +566,10 @@ is not the same as "AARM Compliant," which requires CSA's conformance
 testing protocol. Strix tracks the AARM working group and intends to
 pursue formal conformance testing once that protocol publishes.
 
-The canonical, more detailed mapping (with engineering primitives per
-row) lives at [strixgov.com/partners/aarm](https://www.strixgov.com/partners/aarm).
+A companion mapping of AARM expectations to Strix engineering primitives
+lives at [strixgov.com/partners/aarm](https://www.strixgov.com/partners/aarm).
+That page pairs each expectation with the primitive that implements it; it is
+deliberately not organized by requirement number.
 
 ---
 
@@ -560,9 +594,10 @@ row) lives at [strixgov.com/partners/aarm](https://www.strixgov.com/partners/aar
 - **Attestation** — A sibling artifact joined to an evidence record
   by `evidenceId`. Linked attestations (E1.5, available today) carry
   contextual claims about the underlying decision. Actor attestations
-  (cryptographic agent identity binding) are planned for a subsequent
-  release alongside the MCP gateway tooling and are not in scope for
-  this release.
+  (cryptographic agent identity binding, AARM Core R6) have shipped and
+  are live in production; this package builds their canonical payload
+  but does not verify them — `verifyActorAttestation` in `@strixgov/sdk`
+  does.
 - **Tool-gateway receipt** — A signed record of a single tool
   invocation by an AI agent, produced by the
   `@strixgov/tool-gateway` package. Verifiable offline against the

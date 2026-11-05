@@ -16,7 +16,8 @@ lenses are advisory by construction — they read and report, they never enforce
 | `/runtime-governance-review` | system | The canonical 13-section SGRF review of a project, agent, MCP server, or CI/CD pipeline + the 4-axis profile. |
 | `/govern-pr` | change | Governance-impact review of a single PR/diff — which axes does this change move, and which way. |
 | `/release-readiness` | release | Is a release shipping as a governed, recorded, revocable decision? Ends in GO / GO-WITH-CONDITIONS / NO-GO. |
-| `/strix-wire` | remediation | Wire one consequential call site through `governedAction()`: the kernel evaluates the action before it runs and a queryable evidence record is persisted (recorded wire evidence — not Ed25519-signed at ingest). **Requires a Strix runtime** (`STRIX_API_KEY` + `STRIX_TENANT_ID`). |
+| `/strix-wire` | remediation | Wire one consequential call site through `governedAction()`: the kernel evaluates the action before it runs and a queryable evidence record is persisted (recorded wire evidence — not Ed25519-signed at ingest). **No Strix account needed:** Sandbox Mode (default) auto-provisions a short-lived hosted credential; Offline Mode makes no network calls. A Strix API key and tenant ID are optional and only for your own tenant. |
+| `/govern-ai-egress` | egress | Self-host Strix Governed AI Egress: run the de-identifying proxy (npx or container), point an OpenAI/Anthropic SDK at it, install the local Claude Code prompt hook, and verify with a synthetic request. A clean result means no findings by its detector, not that the data contains no sensitive information. No Strix account needed. |
 
 The first three are pure-advisory and need no runtime. `strix-wire` is the bridge
 from the open advisory layer to the Strix runtime — open skill, commercial control
@@ -63,11 +64,20 @@ Restart Claude Code (or `/reload-plugins`); the skills appear unnamespaced
 
 ### Prerequisites for `/strix-wire` only
 
-The three review lenses need nothing. `strix-wire` talks to a Strix runtime:
+The three review lenses need nothing. `strix-wire` needs **no account and no
+credentials to try it**. It has two modes (see `skills/strix-wire/SKILL.md`):
+
+- **Sandbox Mode (default, hosted).** If `STRIX_API_KEY` / `STRIX_TENANT_ID` are not
+  set, the helper auto-provisions a short-lived sandbox credential and proceeds.
+  Every step, including signing, is a network call to the hosted kernel.
+- **Offline Mode.** A local Ed25519 key signs a local receipt; zero network calls.
+  Choose it explicitly when you are asked at the proposal step.
+
+To use your **own** tenant instead of the sandbox, set the credentials (optional):
 
 ```bash
-export STRIX_API_KEY=sk_test_...     # per-tenant API key
-export STRIX_TENANT_ID=your-tenant   # tenant slug
+export STRIX_API_KEY=sk_test_...     # per-tenant API key (optional)
+export STRIX_TENANT_ID=your-tenant   # the tenant's id, not its slug (optional)
 # optional: export STRIX_API_URL=https://www.strixgov.com (the default)
 ```
 

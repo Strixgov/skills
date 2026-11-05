@@ -59,7 +59,7 @@ touching the signed payload. This is the system's strongest dimension.
 ### 6. Policy & Admissibility Evaluation
 The PolicyEngine is deterministic and content-addressable; admissibility is
 judged **at execution time** against the action, environment, and actor
-(invariant #3), and **re-evaluated at point-of-use** so prior approvals do not
+(invariant #3), and the resulting grant is **re-validated at point-of-use** so prior approvals do not
 transfer (invariant #2). Decision Trace makes the per-gate evaluation legible
 (identity → policy → risk → token → admissible).
 
@@ -73,7 +73,7 @@ it is the clearest open gap in an otherwise strong system.
 - **Capability Maturity: 4.0/5** — governs a broad capability registry across many consequential action types (deploys, mutations, role changes, payer submissions, swarm delegation).
 - **Governance Maturity: 4.5/5** — single canonical guard, CI-enforced zero-unguarded baseline, authority attenuation (swarm SW-2), approval quorum with self-approval blocked; docked for AA-1 actor attribution dormant + capability decay absent.
 - **Independent Verifiability: 5.0/5** — every decision Ed25519-signed over a canonical payload, independently checkable by a third party via `@strixgov/verifier` against a public JWKS — no trust in Strix required.
-- **Runtime Enforcement: 5.0/5** — admissibility judged at execution time, deterministic, re-evaluated at point-of-use, fail-closed.
+- **Runtime Enforcement: 5.0/5** — admissibility decided at evaluation and bound to the action, deterministic, the grant re-validated at point-of-use, fail-closed.
 
 **Tier: Verified** — Independent Verifiability ≥ 4 (the gate for the top tier) is met: decisions are signed and third-party-checkable. The remaining gaps (capability decay, AA-1 activation) are *runtime features on the roadmap*, not hygiene — which is what a high-maturity target's open items look like.
 

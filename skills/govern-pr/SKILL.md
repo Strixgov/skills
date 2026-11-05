@@ -20,8 +20,9 @@ a reviewer where to look.
 It reasons against the five execution-control invariants — a change is most
 interesting when it touches one:
 1. Nothing executes without evaluation.
-2. Execution does not inherit authority (re-evaluated at point-of-use).
-3. Admissibility is judged at execution time.
+2. Execution does not inherit authority (each action carries its own
+   payload-bound, single-use grant, re-validated and consumed at point-of-use).
+3. Admissibility is decided at evaluation and bound to that exact action.
 4. Enforcement is at runtime, not post-hoc logging.
 5. Execution is bounded and revocable.
 

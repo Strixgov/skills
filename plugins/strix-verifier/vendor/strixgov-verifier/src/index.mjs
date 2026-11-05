@@ -203,15 +203,27 @@ export async function fetchPublicKey(kid, jwksBase = DEFAULT_JWKS_BASE) {
  * of the verifier (`buildCanonicalPayload`, `verify`, etc.) expects:
  *
  *   1. Academy /api/proof/<id>:
- *      { ok: true, proof: { ...flat canonical fields }, verification: {...} }
- *      → flatten to `data.proof`. Note: Academy doesn't expose raw
- *      `signature` bytes in this response (only its own server-side
- *      verification result), so records routed here will report
- *      LEGACY_UNSIGNED at the verifier level — that's truthful: we can't
- *      do independent Ed25519 verification without the raw signature.
- *      For Academy records, point `--proof-base https://www.strixgov.com`
- *      instead — Strix Console's external_evidence fallback exposes the
- *      raw signature.
+ *      { ok: true, proof: { ...flat canonical fields, signature,
+ *        signedPayload, signingKeyId }, verification: {...} }
+ *      → flatten to `data.proof`.
+ *
+ *      CORRECTED 2026-08-19. This note previously read "Academy doesn't
+ *      expose raw `signature` bytes in this response ... records routed
+ *      here will report LEGACY_UNSIGNED", and told readers to point
+ *      `--proof-base` at www.strixgov.com instead. That stopped being
+ *      true at launch-baseline-2026-05-17.C, which added `signedPayload`
+ *      (plus `signature` and the FULL, unredacted `signingKeyId`) to this
+ *      response precisely so an external verifier needs no Strix account
+ *      — the universal-verification claim rests on it. Measured against
+ *      production on 2026-08-19: record 49062 returns an 86-char
+ *      `signature`, a `signedPayload`, and kid `strix-prod-2026-06`, and
+ *      verifies VERIFIED through this path.
+ *
+ *      Left as a correction rather than a silent edit because the stale
+ *      text did real damage: a reviewer cited these lines as the canonical
+ *      Academy contract to argue that a conformance fixture carrying a
+ *      signature was synthetic (PR #2169). A wrong comment in a file this
+ *      load-bearing is read as spec.
  *
  *   2. Strix Console /api/public/proof/<id> (via the /api/proof rewrite):
  *      { schemaVersion, evidenceId, verificationStatus, fields: {...},

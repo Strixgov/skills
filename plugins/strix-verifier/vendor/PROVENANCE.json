@@ -1,10 +1,10 @@
 {
   "package": "@strixgov/verifier",
-  "version": "1.22.0",
+  "version": "1.24.1",
   "source": "npm",
   "registry": "https://registry.npmjs.org/",
-  "tarballIntegrity": "sha512-O+MzZ1o5bd1IvrUup9f0x4cTNclBmqRU3xDbNzLgHewdt4N1RH43D1e9gC/y82ZaIirDbdCmmVhEMO8NAU/Lig==",
-  "tarballShasum": "10abc914d805b28a2eecc2f8d8cf014a6ffee8b7",
-  "vendoredTreeSha256": "1d65f5c4b0aa1fc7001344e5a7c05da48917186a857af70b5fedecc724e1dba9",
+  "tarballIntegrity": "sha512-7Xo/eI9loP+14mHX+Xy9NQ5gK1j4P6HI/QzHjPLFT46mX1HC02KmOioL7+rrjTlRLWrAcJKT4JesTVjUoj+Pag==",
+  "tarballShasum": "e95375fa115439b721496c3a70bc6900007ea521",
+  "vendoredTreeSha256": "44ea8e3b8dff0b4bdc7575997daf61575f3403d7f509d0ede4fdc0b2c4f4aa9e",
   "note": "Verbatim MIT-published package, vendored via scripts/vendor-verifier.mjs (never re-implemented). tarballIntegrity/tarballShasum pin the npm registry artifact; vendoredTreeSha256 is a stable digest over the extracted tree (sorted relative-path + content) that CI recomputes to detect any manual edit."
 }

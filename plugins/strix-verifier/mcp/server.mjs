@@ -28,10 +28,22 @@ try {
 } catch {
   /* defaults below */
 }
-const PINNED = CONFIG.verifierVersion || "1.22.0";
+const PINNED = CONFIG.verifierVersion || "1.24.1";
+
+let PLUGIN_MANIFEST = {};
+try {
+  PLUGIN_MANIFEST = JSON.parse(readFileSync(join(PLUGIN_ROOT, ".claude-plugin", "plugin.json"), "utf8"));
+} catch {
+  /* fall through to the literal below */
+}
 
 const PROTOCOL_VERSION = "2025-06-18";
-const SERVER_INFO = { name: "strix-verifier", version: "1.22.0" };
+// The PLUGIN's own version, not the embedded verifier's — two distinct
+// concepts the release lint keeps separate, and they are allowed to differ.
+// Derived rather than written twice: this literal used to be hand-maintained
+// and sits outside the pin family the lint checks, so a bump could land
+// everywhere else and leave the MCP server advertising a version it is not.
+const SERVER_INFO = { name: "strix-verifier", version: PLUGIN_MANIFEST.version || "1.24.1" };
 
 const TOOLS = [
   {

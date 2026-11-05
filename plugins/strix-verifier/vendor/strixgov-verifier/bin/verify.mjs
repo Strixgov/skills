@@ -33,6 +33,7 @@ import {
   verifyTrustMark,
   exportOfflineBundle,
 } from "../src/index.mjs";
+import { verifyPhysicalApproval } from "../src/physical-approval.mjs";
 
 /**
  * Read a text file with explicit BOM detection.
@@ -108,6 +109,8 @@ Usage:
   strix-verify trustmark <grantId> [--proof-base <url>] [--jwks-base <url>] [--revocations <url>] [--json]
   strix-verify disclosure <bundle.json> [--jwks <path>] [--json]
   strix-verify agent-session <bundle.json> [--jwks <path>] [--json]
+  strix-verify physical-approval --proof <bundle.json> [--json]   (bundle: tenant-authenticated proof endpoint)
+  strix-verify physical-approval <requestId> [--base <url>] [--json]   (public projection is REDACTED — reports lifecycle only)
   strix-verify proof export <evidenceId> [-o <path>] [--proof-base <url>] [--json]
 
 Options:
@@ -353,6 +356,155 @@ if (args[0] === "swarm") {
     process.exit(r.verificationStatus === "VERIFIED" ? 0 : 1);
   } catch (err) {
     console.error(`strix-verify swarm: ${err.message}`);
+    process.exit(2);
+  }
+}
+
+// Physical Approval Bridge v1 — re-derives the verdict with this package's
+// own canonicalization + Ed25519 (src/physical-approval.mjs; zero shared
+// code with the producer) from a --proof bundle file, fully offline. The
+// bundle comes from the TENANT-AUTHENTICATED endpoint
+// GET /api/v1/physical-approval/requests/<requestId>/proof — the PUBLIC
+// projection is REDACTED BY CONSTRUCTION (its signed bytes would expose
+// tenant/approver/actor/device identifiers), so fetching a requestId from
+// the public surface reports lifecycle facts + the server-derived status
+// and then says exactly what to do next, rather than pretending to verify.
+// Honest boundary printed on every verdict: signature + binding only —
+// never approver presence, never execution; a missing device key caps at
+// UNVERIFIABLE, never INVALID.
+if (args[0] === "physical-approval") {
+  let base = "https://www.strixgov.com";
+  let proofPath = null;
+  let jsonOut = false;
+  const positional = [];
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--base" && args[i + 1]) base = args[++i];
+    else if (args[i] === "--proof" && args[i + 1]) proofPath = args[++i];
+    else if (args[i] === "--json") jsonOut = true;
+    else positional.push(args[i]);
+  }
+
+  try {
+    const requestId = positional[0];
+    if (!requestId && !proofPath) {
+      console.error(
+        "Missing requestId. Usage: strix-verify physical-approval <requestId> [--base <url>] [--proof <file>] [--json]",
+      );
+      process.exit(2);
+    }
+
+    let projection;
+    if (proofPath) {
+      projection = JSON.parse(await readTextFileNoBom(proofPath));
+    } else {
+      const url = `${base.replace(/\/$/, "")}/api/public/proof/physical-approval/${encodeURIComponent(requestId)}`;
+      const res = await fetch(url, { headers: { accept: "application/json" } });
+      if (!res.ok) {
+        console.error(`strix-verify physical-approval: ${url} answered ${res.status}`);
+        process.exit(2);
+      }
+      projection = await res.json();
+    }
+
+    // A redacted public projection carries NO signed bytes — that is its
+    // contract, not a defect. Say so and point at the authenticated bundle
+    // instead of failing the parse into a misleading INVALID.
+    if (!projection?.request?.canonicalBytes) {
+      const out = {
+        requestId: requestId ?? projection?.requestId ?? null,
+        verificationStatus: "REDACTED_PROJECTION",
+        lifecycleState: projection?.lifecycle?.state ?? null,
+        serverDerivedStatus: projection?.verification?.status ?? null,
+        assurance: projection?.assurance ?? null,
+        detail:
+          "The public projection is redacted by construction (no signed bytes, no key material). " +
+          "Obtain the tenant-authenticated bundle from GET /api/v1/physical-approval/requests/<requestId>/proof " +
+          "and re-run: strix-verify physical-approval --proof <bundle.json>",
+      };
+      if (jsonOut) console.log(JSON.stringify(out, null, 2));
+      else {
+        console.log();
+        console.log(`@strixgov/verifier — Physical Approval Bridge v1`);
+        console.log("─".repeat(56));
+        console.log(`  Request:           ${out.requestId}`);
+        console.log(`  Lifecycle state:   ${out.lifecycleState}`);
+        console.log(`  Server-derived:    ${out.serverDerivedStatus} (server statement — NOT independently checked here)`);
+        if (out.assurance) {
+          console.log(`  Channel:           ${out.assurance.approvalChannel} / ${out.assurance.deviceAssurance}`);
+          console.log(`  Hardware-backed:   ${out.assurance.hardwareBacked}   Human presence proven: ${out.assurance.humanPresenceProven}`);
+        }
+        console.log(`  Status:            REDACTED PROJECTION (nothing verifiable on this surface)`);
+        console.log();
+        console.log(`  ${out.detail}`);
+        console.log();
+      }
+      process.exit(1);
+    }
+
+    const request = JSON.parse(projection.request.canonicalBytes);
+    const responseBlock = projection?.response ?? null;
+    if (!responseBlock) {
+      const out = {
+        requestId: requestId ?? projection?.requestId ?? null,
+        verificationStatus: "UNRESOLVED",
+        reason: "no device response has resolved this request yet",
+        lifecycleState: projection?.lifecycle?.state ?? null,
+      };
+      if (jsonOut) console.log(JSON.stringify(out, null, 2));
+      else {
+        console.log();
+        console.log(`@strixgov/verifier — Physical Approval Bridge v1`);
+        console.log("─".repeat(56));
+        console.log(`  Request:           ${out.requestId}`);
+        console.log(`  Lifecycle state:   ${out.lifecycleState}`);
+        console.log(`  Status:            UNRESOLVED (nothing to verify yet)`);
+        console.log();
+      }
+      process.exit(1);
+    }
+
+    const payload = JSON.parse(responseBlock.canonicalPayloadBytes ?? "null");
+    const r = verifyPhysicalApproval(
+      {
+        request,
+        response: { ...payload, signature: responseBlock.signature },
+        deviceKeyJwk: responseBlock.deviceKey ?? null,
+      },
+      {
+        expectedFingerprint: projection?.request?.confirmationFingerprint,
+      },
+    );
+
+    // Agreement with the server's own derived block — reported, never trusted.
+    const serverStatus = projection?.verification?.status ?? null;
+    const agreesWithServer = serverStatus === null ? null : serverStatus === r.verdict;
+
+    if (jsonOut) {
+      console.log(JSON.stringify({ requestId: requestId ?? projection?.requestId, ...r, serverStatus, agreesWithServer }, null, 2));
+    } else {
+      console.log();
+      console.log(`@strixgov/verifier — Physical Approval Bridge v1`);
+      console.log("─".repeat(56));
+      console.log(`  Request:           ${requestId ?? projection?.requestId}`);
+      console.log(`  Request hash:      ${r.requestHash ?? "—"}`);
+      console.log(`  Fingerprint:       ${r.fingerprint ?? "—"}`);
+      console.log(`  Device decision:   ${r.decision ?? "—"}`);
+      console.log(`  Status:            ${r.verdict}`);
+      console.log(`  Reasons:           ${r.reasons.join(", ")}`);
+      if (agreesWithServer !== null) {
+        console.log(`  Agrees w/ server:  ${agreesWithServer}`);
+      }
+      console.log();
+      console.log(`  Boundary: this verdict attests SIGNATURE + BINDING between the`);
+      console.log(`  presented request and response. It does not attest approver`);
+      console.log(`  presence, organizational authority, quorum, or execution —`);
+      console.log(`  those live in kernel records with their own verifiers`);
+      console.log(`  (strix-verify quorum <decisionId>, strix-verify <evidenceId>).`);
+      console.log();
+    }
+    process.exit(r.verdict === "VERIFIED" ? 0 : r.verdict === "UNVERIFIABLE" ? 1 : 1);
+  } catch (err) {
+    console.error(`strix-verify physical-approval: ${err.message}`);
     process.exit(2);
   }
 }

@@ -206,7 +206,16 @@ test("npx fallback: STRIX_VERIFIER_FORCE_NPX=1 invokes npx with the pinned packa
   const args = JSON.parse(fs.readFileSync(marker, "utf8"));
   fs.rmSync(tmp, { recursive: true, force: true });
 
-  assert.deepEqual(args.slice(0, 2), ["-y", "@strixgov/verifier@1.22.0"], `expected npx invoked with -y @strixgov/verifier@<pinned>, got ${JSON.stringify(args)}`);
+  // Derived from config.json, NOT written here as a literal. This is a genuine
+  // cross-check rather than a tautology: bin/strix-verify is POSIX sh and does
+  // not read config.json — it carries its own `${STRIX_VERIFIER_VERSION:-<v>}`
+  // fallback — so this asserts that two independently maintained sources agree
+  // on which verifier the plugin launches. Hardcoding it here meant every
+  // re-vendor needed a hand edit in lockstep, and a missed one would have left
+  // the test pinning a version nothing else shipped.
+  const pinned = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, "config.json"), "utf8")).verifierVersion;
+  assert.ok(pinned, "config.json must declare verifierVersion — it is the embedded-verifier anchor");
+  assert.deepEqual(args.slice(0, 2), ["-y", `@strixgov/verifier@${pinned}`], `expected npx invoked with -y @strixgov/verifier@<pinned from config.json>, got ${JSON.stringify(args)}`);
   assert.equal(args[2], "5686");
 });
 
