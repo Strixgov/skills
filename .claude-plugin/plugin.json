@@ -1,6 +1,6 @@
 {
   "name": "strix-governance",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "description": "SGRF v1 governance-review skills for Claude Code \u2014 the system, change, and release lenses, plus strix-wire to wire a first governed action and govern-ai-egress to self-host governed AI egress. Advisory by default; runtime-aware when a Strix runtime is present.",
   "author": {
     "name": "Strix",

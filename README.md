@@ -60,7 +60,7 @@ cp -r strixgov-skills/skills/* .claude/skills/
 
 Restart Claude Code (or `/reload-plugins`); the skills appear unnamespaced
 (`/runtime-governance-review`, `/govern-pr`, `/release-readiness`,
-`/strix-wire`).
+`/strix-wire`, `/govern-ai-egress`).
 
 ### Prerequisites for `/strix-wire` only
 
