@@ -5,6 +5,71 @@ All notable changes to `@strixgov/verifier` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.25.0] — 2026-11-11
+
+### Fixed
+
+- **#2835: a record declaring an algorithm other than `Ed25519` verified.**
+  An explicit `signatureAlgorithm` other than exactly `"Ed25519"` (including
+  `"ed25519"`, `"RS256"`, a number or an empty string) is now refused as
+  `UNVERIFIABLE` / `UNSUPPORTED_ALGORITHM` before any key is fetched. A record
+  with no declaration predates the field and is read under the fixed SE v1
+  rule, reported as `INFERRED_SE_V1_LEGACY`.
+- **#2836: a record declaring schema version 2, or a malformed version,
+  verified.** A declared version other than `1` / `"1"` is refused as
+  `COMPLIANCE_VIOLATION` / `SIGNED_PAYLOAD_INVALID` before any key is fetched.
+  Nothing is normalized into 1.
+  Published 1.24.1 returned `VERIFIED` (or `SIGNATURE_INVALID` after a key
+  fetch) on all four declaration vectors in `conformance/corpus/se_v1`.
+
+### Added
+
+- **Decision-receipt evidence hashes are checked from the signed envelope.**
+  Strix's decision-receipt writer commits `evidenceHash` to its own envelope
+  (two-pass: SHA-256 of the envelope with `evidenceHash` `"PLACEHOLDER"`). The
+  verifier now reproduces that commitment with no server input:
+  - a reproducing commitment reports `hashValid: true` and scope
+    `SIGNED_ENVELOPE_AND_EVIDENCE_CONTENT`;
+  - a record signed as a decision receipt (`actorRole: "decision-executor"`)
+    whose hash does not reproduce is `COMPLIANCE_VIOLATION` /
+    `EVIDENCE_HASH_MISMATCH`;
+  - any other writer's hash commits to content outside the envelope and is
+    reported as not checked (`hashValid: null`, `UNSUPPORTED_HASH_PROFILE`),
+    never as tampering.
+  The Academy eight-field profile is unchanged and still takes precedence when
+  its inputs are present.
+
+## [1.24.2] — 2026-11-04 (prepared, never published; superseded by 1.25.0)
+
+### Fixed
+
+- **#2710: evidence summaries could display unsigned fields beside VERIFIED.**
+  Human summaries now use the authenticated SE-v1 payload; conflicting API
+  fields fail with `FIELD_MISMATCH` and exit 1. Academy's writer timestamp is
+  checked as `hashedAt` and displayed from the signed payload, rather than
+  its separate database insertion time. Evidence-content SHA-256 is recomputed
+  locally for the fixed Academy eight-field profile (with the restricted
+  historical seven-field AI/cron fallback), independently of the signature
+  and server verdicts. Missing inputs/unsupported profiles report `hashValid:
+  null` and `SIGNED_ENVELOPE_ONLY`, never a fabricated hash success. Malformed
+  signed envelopes and declared unsupported algorithms are explicit failures.
+  Single-record chain verification remains not checked. No frozen signed bytes,
+  producer, signing key or discovery contract changed. Registry publication and
+  installed-artifact acceptance are tracked separately from this release candidate.
+
+### Added
+
+- **Execution Covenant publication records in the existing disclosure verifier.**
+  `verifyDisclosureBundle` now recognizes
+  `strix.execution-covenant-publication@1.0`, independently re-canonicalizes
+  the enclosed ECR, recomputes its SHA-256, and requires that digest to match
+  the committed `ecrHash` leaf. The surrounding `run_commitment_v1` signature,
+  RFC 6962 inclusion proof, JWKS resolution, and `completeness: NOT_PROVEN`
+  semantics are unchanged. This adds no ECR-specific signing key or signature
+  format.
+
 ## [1.24.1] — 2026-09-10
 
 ### Fixed
@@ -734,3 +799,4 @@ key rotation with and without retention, record-not-found, and transport error.
 ### Added
 - Tool-gateway receipt verification (`receipt <path>`) and chain verification
   (`chain <path>`) for `@strixgov/tool-gateway` v1 + v2 receipts.
+

@@ -15,6 +15,7 @@
  */
 
 import crypto from "node:crypto";
+import { evidenceFieldMismatches, checkEvidenceContentHash } from "./evidence-integrity.mjs";
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -285,6 +286,16 @@ export async function fetchEvidence(evidenceId, proofBase = DEFAULT_PROOF_BASE) 
       // and evidenceId are deliberately NOT promoted — see header note above.
       ...(data.signature !== undefined ? { signature: data.signature } : {}),
       ...(data.schemaVersion !== undefined ? { schemaVersion: data.schemaVersion } : {}),
+      // Per-record verification declarations (not signed fields, and so not
+      // inside `fields`). `signatureAlgorithm` is the algorithm the record
+      // declares; `declaredSchemaVersion` is the schema version the STORED
+      // record declares. The latter is promoted separately because the
+      // top-level `schemaVersion` on this response is the response's own
+      // shape version (always 1) and would otherwise mask a record that
+      // declares another version. Absent on Console versions that predate
+      // the declaration fields; absence is handled as "no declaration".
+      ...(data.signatureAlgorithm !== undefined ? { signatureAlgorithm: data.signatureAlgorithm } : {}),
+      ...(data.declaredSchemaVersion !== undefined ? { declaredSchemaVersion: data.declaredSchemaVersion } : {}),
     };
   }
 
@@ -522,7 +533,7 @@ export function verifyHash(canonicalPayload, expectedHash) {
  * only one of them means someone tampered with something.
  */
 export const VERIFICATION_REASONS = Object.freeze({
-  SIGNATURE_VALID: "All required verification layers passed.",
+  SIGNATURE_VALID: "The signature and record-field binding passed; any performed evidence-content hash check also passed. Consult verificationScope; chain traversal is not implied.",
   LEGACY_UNSIGNED:
     "Pre-Signed-Evidence-v1 record. No signature was ever produced; provenance cannot be established.",
   SIGNATURE_ABSENT:
@@ -530,9 +541,15 @@ export const VERIFICATION_REASONS = Object.freeze({
   SIGNING_KEY_UNKNOWN:
     "The signing key id does not resolve in the presented JWKS. Cannot verify — this is NOT evidence of tampering.",
   UNSUPPORTED_ALGORITHM:
-    "A candidate key is not Ed25519. Strix signs SE v1 exclusively with Ed25519; a non-Ed25519 key is never used to verify.",
+    "The record declares a signature algorithm other than Ed25519, or a candidate key is not Ed25519. Strix signs SE v1 exclusively with Ed25519; nothing else is ever used to verify. Cannot verify — this is NOT evidence of tampering.",
   SIGNATURE_INVALID:
     "A signing key resolved, and the signature did not verify over the canonical payload. The record does not match what was signed.",
+  FIELD_MISMATCH:
+    "API record fields disagree with the authenticated signed payload. The signature may be valid, but the supplied record is inconsistent.",
+  EVIDENCE_HASH_MISMATCH:
+    "Independent hashing of the underlying decision content does not match the committed evidenceHash.",
+  SIGNED_PAYLOAD_INVALID:
+    "The signed bytes do not encode the frozen canonical Signed Evidence v1 schema. No authenticated display fields are available.",
   RECORD_NOT_FOUND: "No record with this identifier exists on the proof surface.",
   TRANSPORT_ERROR:
     "The proof or JWKS endpoint could not be reached. Nothing about the record's validity is established either way.",
@@ -571,28 +588,29 @@ export async function verify(evidenceId, options = {}) {
     evidenceId,
     recordType: null,
     schemaVersion: null,
-    hashValid: false,
-    /**
-     * DIAGNOSTIC ONLY — does the record's `evidenceHash` field happen to equal
-     * sha256(canonical payload)?
-     *
-     * For SE v1 the answer is normally **false, and that is correct**:
-     * `evidenceHash` addresses the underlying governance decision content and
-     * is a field INSIDE the signed payload, authenticated by the signature. It
-     * is not the digest of the signing envelope, and SE v1 never claimed it
-     * was. This is surfaced in `--json` for tooling that wants the datum, and
-     * deliberately NOT rendered as a pass/fail check in the human output —
-     * showing a red ✗ beside a VERIFIED record would train the reader to
-     * distrust valid records, which is a worse outcome than not reporting it.
-     *
-     * Never gate on this. `signatureValid` is the integrity gate.
-     */
+    // null means decision content was not recomputed. Signature authenticity
+    // is a separate check, never a substitute evidence hash.
+    hashValid: null,
+    hashReason: "NOT_CHECKED",
+    recomputedEvidenceHash: null,
+    hashProfile: null,
+    hashInputFields: [],
+    fieldMismatches: [],
+    authenticatedRecord: null,
+    verificationScope: null,
+    // Historical diagnostic only: sha256(envelope) != decision evidenceHash.
     payloadSelfConsistent: null,
     chainValid: null,
     chainReason: null,
     signaturePresent: false,
     signatureValid: false,
     signatureAlgorithm: null,
+    // The algorithm the record itself declares (verbatim), and whether the
+    // algorithm used was declared by the record or inferred from the fixed
+    // Signed Evidence v1 rule because the record carries no declaration.
+    declaredSignatureAlgorithm: null,
+    signatureAlgorithmProvenance: null,
+    declaredSchemaVersion: null,
     verificationStatus: "UNKNOWN",
     verificationReason: null,
     record: null,
@@ -627,6 +645,67 @@ export async function verify(evidenceId, options = {}) {
       ? CHAIN_REASONS.NOT_CHECKED_SINGLE_RECORD
       : CHAIN_REASONS.ABSENT;
 
+    // ── Refusals that precede key lookup and every cryptographic check ──────
+    // Mirrors apps/strix-console/src/lib/proof/canonical.ts classifyFullMatch,
+    // in the same order: schema version first, then algorithm.
+    //
+    // Schema version. An EXPLICIT declared version must be exactly 1 / "1".
+    // It is never coerced: the Academy canonical form's numeric coercion below
+    // exists to recover records whose version was dropped, and must not turn a
+    // declared "1.0", "v1" or malformed value into v1. Two places can carry
+    // the declaration: `declaredSchemaVersion` (the stored value, as the
+    // Console proof route reports it) and `schemaVersion` on the record.
+    //
+    // When the response carries the signed bytes themselves (`signedPayload`),
+    // the version is read from those bytes further down and the record-level
+    // `schemaVersion` is only an unsigned projection of it: a disagreement is
+    // then reported as FIELD_MISMATCH after the envelope is authenticated, not
+    // here. The pre-check on `schemaVersion` therefore applies only on the
+    // reconstruction path, where that field is what the bytes are rebuilt from.
+    const hasSignedBytes = typeof record.signedPayload === "string" && record.signedPayload.length > 0;
+    const versionDeclarations = hasSignedBytes
+      ? [record.declaredSchemaVersion]
+      : [record.declaredSchemaVersion, record.schemaVersion];
+    result.declaredSchemaVersion = record.declaredSchemaVersion ?? record.schemaVersion ?? null;
+    for (const declared of versionDeclarations) {
+      if (declared != null && declared !== 1 && declared !== "1") {
+        return settle("COMPLIANCE_VIOLATION", "SIGNED_PAYLOAD_INVALID");
+      }
+    }
+
+    // Algorithm. An explicit declaration other than exactly "Ed25519" is
+    // refused. A record with no declaration predates the declaration field
+    // and is read under the fixed SE v1 rule, reported as inferred.
+    result.declaredSignatureAlgorithm = record.signatureAlgorithm ?? null;
+    result.signatureAlgorithmProvenance =
+      record.signatureAlgorithm != null ? "DECLARED" : "INFERRED_SE_V1_LEGACY";
+    if (record.signatureAlgorithm != null && record.signatureAlgorithm !== "Ed25519") {
+      return settle("UNVERIFIABLE", "UNSUPPORTED_ALGORITHM");
+    }
+
+    const canonical = buildCanonicalPayload(record);
+    let payload;
+    try {
+      payload = JSON.parse(canonical);
+      // Preserve the frozen byte contract; reject duplicate keys, extra or
+      // missing fields, unknown versions and non-object JSON.
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)
+        || ![1, "1"].includes(payload.schemaVersion)
+        || canonical !== buildCanonicalPayload({ ...payload,
+          sourceApp: typeof payload.schemaVersion === "number" ? "academy-platform" : undefined })) {
+        return settle("COMPLIANCE_VIOLATION", "SIGNED_PAYLOAD_INVALID");
+      }
+    } catch {
+      return settle("COMPLIANCE_VIOLATION", "SIGNED_PAYLOAD_INVALID");
+    }
+    // Independently hash the underlying content, even if no key resolves.
+    const hash = checkEvidenceContentHash(record, payload, buildCanonicalPayload);
+    result.hashValid = hash.valid;
+    result.hashReason = hash.reason;
+    result.recomputedEvidenceHash = hash.recomputedHash;
+    result.hashProfile = hash.profile;
+    result.hashInputFields = hash.inputFields;
+
     // Step 3: Fetch all public keys matching the kid (kid collisions are
     // legitimate per RFC 7517; first-match resolution misses one side of
     // the Phase 2 closure scenario where Academy's retired key + strix-
@@ -649,9 +728,6 @@ export async function verify(evidenceId, options = {}) {
       throw err;
     }
 
-    // Step 4: Build canonical payload
-    const canonical = buildCanonicalPayload(record);
-
     // Step 5: Verify against each candidate until one passes
     result.signatureAlgorithm = "Ed25519";
     let signatureValid = false;
@@ -663,16 +739,18 @@ export async function verify(evidenceId, options = {}) {
     }
     result.signatureValid = signatureValid;
 
-    // Step 6: `hashValid` is retained at its long-standing meaning — the
-    // canonical payload's integrity, which in SE v1 is established by the
-    // signature and nothing else. `payloadSelfConsistent` is the genuinely
-    // independent check and is reported beside it.
-    result.hashValid = result.signatureValid;
     result.payloadSelfConsistent = checkPayloadSelfConsistency(record, canonical);
+    if (!signatureValid) return settle("COMPLIANCE_VIOLATION", "SIGNATURE_INVALID");
 
-    return signatureValid
-      ? settle("VERIFIED", "SIGNATURE_VALID")
-      : settle("COMPLIANCE_VIOLATION", "SIGNATURE_INVALID");
+    // Only authenticated signed fields may feed the human summary.
+    result.authenticatedRecord = payload;
+    result.schemaVersion = payload.schemaVersion;
+    result.fieldMismatches = evidenceFieldMismatches(record, payload);
+    if (result.fieldMismatches.length) return settle("COMPLIANCE_VIOLATION", "FIELD_MISMATCH");
+    if (result.hashValid === false) return settle("COMPLIANCE_VIOLATION", "EVIDENCE_HASH_MISMATCH");
+    result.verificationScope = result.hashValid === true
+      ? "SIGNED_ENVELOPE_AND_EVIDENCE_CONTENT" : "SIGNED_ENVELOPE_ONLY";
+    return settle("VERIFIED", "SIGNATURE_VALID");
   } catch (err) {
     result.error = err.message;
     if (err?.url) result.attemptedUrl = err.url;
@@ -688,7 +766,7 @@ export async function verify(evidenceId, options = {}) {
  * This is reported, never gating. In SE v1 `evidenceHash` addresses the
  * underlying governance decision content, so it is not expected to equal
  * sha256(signing envelope) — a mismatch here is informational, and the
- * signature remains the sole integrity gate.
+ * signature authenticates the envelope; decision-content hashing is separate.
  */
 function checkPayloadSelfConsistency(record, canonicalPayload) {
   if (!record?.evidenceHash) return null;
@@ -2731,3 +2809,4 @@ export {
   MCP_PROOF_CTY,
   MCP_SCITT_REASONS,
 } from "./mcp-scitt.mjs";
+

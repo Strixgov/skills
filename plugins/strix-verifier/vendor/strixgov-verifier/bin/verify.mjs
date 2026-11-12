@@ -1157,7 +1157,11 @@ try {
       process.exit(2);
     }
 
-    const record = result.record;
+    // Never render unsigned API convenience fields beside a verified label.
+    const record = result.authenticatedRecord;
+    if (!record && result.record) {
+      console.log(`${DIM}Record summary unavailable: no authenticated signed fields.${RESET}`);
+    }
     if (record) {
       console.log(
         `${DIM}Capability:${RESET}  ${record.capabilityId ?? "unknown"}`
@@ -1187,14 +1191,15 @@ try {
 
     console.log(`${BOLD}Verification Results${RESET}`);
     console.log(`${"─".repeat(52)}`);
-    // When no key resolved, no signature check ran — so `hashValid` (which in
-    // SE v1 is established by the signature) was not evaluated. Printing a red
-    // ✗ false there reads as a failed check rather than an absent one.
-    const hashChecked = result.signatureAlgorithm !== null;
+    // Decision-content hashing is independent of key resolution/signature.
+    const hashChecked = result.hashValid !== null;
     console.log(
       `  ${hashChecked ? checkMark(result.hashValid) : triMark(null)} ` +
         `Hash valid:          ${hashChecked ? result.hashValid : "not checked"}`
     );
+    if (result.hashReason) console.log(`       ${DIM}hash: ${result.hashReason}${RESET}`);
+    if (result.fieldMismatches?.length) console.log(`  Field mismatches:    ${result.fieldMismatches.join(", ")}`);
+    if (result.verificationScope) console.log(`  Verified scope:      ${result.verificationScope}`);
     console.log(
       `  ${triMark(result.chainValid)} Chain valid:         ${fmtTri(result.chainValid)}`
     );
@@ -1223,17 +1228,17 @@ try {
 
     if (result.verificationStatus === "VERIFIED") {
       console.log(
-        `${GREEN}This record was cryptographically signed by the Strix governance kernel.${RESET}`
+        `${GREEN}The signed envelope verifies against the supplied JWKS.${RESET}`
       );
       console.log(
-        `${GREEN}The evidence hash and signature are independently verifiable.${RESET}`
+        `${DIM}${result.hashValid === true ? "Decision-content hash independently recomputed and matched." : "Decision-content hash not recomputed; envelope authenticity only."} Chain continuity not checked.${RESET}`
       );
     } else if (result.verificationStatus === "LEGACY_UNSIGNED") {
       console.log(
         `${YELLOW}This is a pre-Signed Evidence v1 record (no signature).${RESET}`
       );
       console.log(
-        `${YELLOW}Hash integrity can still be verified but provenance cannot.${RESET}`
+        `${YELLOW}No signed provenance is established. Consult the individual hash result.${RESET}`
       );
     } else if (result.verificationStatus === "UNVERIFIABLE") {
       // Cannot verify is not proven wrong. Saying "tampered" here would be a
@@ -1250,10 +1255,10 @@ try {
       );
     } else {
       console.log(
-        `${RED}A signing key resolved and the signature did not verify over the${RESET}`
+        `${RED}Record verification failed: ${result.verificationReason}.${RESET}`
       );
       console.log(
-        `${RED}canonical payload. This record does not match what was signed.${RESET}`
+        `${RED}Consult the signature, field-binding and hash results separately.${RESET}`
       );
     }
     console.log();
@@ -1323,3 +1328,4 @@ try {
   }
   process.exit(2);
 }
+

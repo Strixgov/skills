@@ -41,6 +41,7 @@ export const DISCLOSURE_REASONS = Object.freeze({
   RECORD_UNRECOGNIZED: "DISCLOSURE_RECORD_UNRECOGNIZED",
   RECORD_INVALID: "DISCLOSURE_RECORD_INVALID",
   RECORD_KEY_UNRESOLVED: "DISCLOSURE_RECORD_KEY_UNRESOLVED",
+  ECR_RECORD_INVALID: "DISCLOSURE_ECR_RECORD_INVALID",
 });
 
 // ── Own canonicalization (SCJ-v1-compatible; independently implemented) ──
@@ -109,6 +110,37 @@ function keyFromJwk(jwk) {
     return createPublicKey({ key: jwk, format: "jwk" });
   } catch {
     return null;
+  }
+}
+
+function looksLikeEcrPublication(record) {
+  return (
+    record &&
+    typeof record === "object" &&
+    record.schema === "strix.execution-covenant-publication" &&
+    record.schemaVersion === "1.0" &&
+    typeof record.ecrHash === "string" &&
+    HEX64.test(record.ecrHash) &&
+    record.ecr &&
+    typeof record.ecr === "object" &&
+    !Array.isArray(record.ecr)
+  );
+}
+
+function verifyEcrPublicationRecord(record) {
+  if (!looksLikeEcrPublication(record)) return "UNVERIFIABLE";
+  try {
+    const digest = createHash("sha256")
+      .update(Buffer.from(canonicalize(record.ecr), "utf8"))
+      .digest("hex");
+    if (digest !== record.ecrHash) return "INVALID";
+    if (
+      record.ecr.schema !== "strix.execution-covenant-record" ||
+      record.ecr.schemaVersion !== "1.0"
+    ) return "INVALID";
+    return "VERIFIED";
+  } catch {
+    return "INVALID";
   }
 }
 
@@ -223,6 +255,9 @@ export function verifyDisclosureBundle(bundle, opts = {}) {
   const verifyRecord =
     opts.recordVerifier ??
     ((record) => {
+      if (looksLikeEcrPublication(record)) {
+        return verifyEcrPublicationRecord(record);
+      }
       if (!looksLikeSeV1(record)) {
         return jwks ? "UNVERIFIABLE" : "UNVERIFIABLE";
       }

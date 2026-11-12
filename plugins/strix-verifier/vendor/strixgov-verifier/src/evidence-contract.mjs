@@ -9,9 +9,14 @@ const na = (reason) => c("NOT_APPLICABLE", false, null, reason);
 
 export function buildEvidenceVerificationContract(input) {
   const present = Boolean(input.signaturePresent);
+  // Refusals made before key lookup (unsupported declared algorithm or schema
+  // version). Mirrors apps/strix-console/src/lib/proof/evidence-verification-contract.ts.
+  const refusedForSchemaVersion = input.status === "UNSUPPORTED_SCHEMA_VERSION";
+  const refusedForAlgorithm = input.status === "UNSUPPORTED_ALGORITHM";
+  const refusedBeforeCrypto = present && (refusedForSchemaVersion || refusedForAlgorithm);
   const declaredAlgorithm = present ? (input.signatureAlgorithm ?? SE_V1_SIGNATURE_ALGORITHM) : null;
   const algorithm = present
-    ? (declaredAlgorithm === SE_V1_SIGNATURE_ALGORITHM
+    ? (declaredAlgorithm === SE_V1_SIGNATURE_ALGORITHM && !refusedForAlgorithm
       ? { ...pass("The record algorithm is Ed25519, the algorithm fixed by Signed Evidence v1."), declared: declaredAlgorithm, expected: SE_V1_SIGNATURE_ALGORITHM }
       : { ...fail(`Unsupported Signed Evidence algorithm: ${declaredAlgorithm ?? "missing"}.`), declared: declaredAlgorithm, expected: SE_V1_SIGNATURE_ALGORITHM })
     : { ...na("Unsigned records do not declare a signature algorithm."), declared: null, expected: SE_V1_SIGNATURE_ALGORITHM };
@@ -19,6 +24,8 @@ export function buildEvidenceVerificationContract(input) {
   const countKnown = typeof input.resolvedKeyCandidateCount === "number";
   const keyResolution = !present
     ? { ...na("Unsigned records do not require public-key resolution."), keyId: input.signingKeyId ?? null, candidateCount: null }
+    : refusedBeforeCrypto
+      ? { ...np("Public-key resolution was not attempted: the record was refused before key lookup."), keyId: input.signingKeyId ?? null, candidateCount: null }
     : !countKnown
       ? { ...np("Public-key resolution outcome was not independently supplied."), keyId: input.signingKeyId ?? null, candidateCount: null }
       : input.resolvedKeyCandidateCount > 0
@@ -27,6 +34,8 @@ export function buildEvidenceVerificationContract(input) {
 
   const signature = !present
     ? { ...na("No signature is present on this record."), present: false, algorithm: null, keyId: input.signingKeyId ?? null }
+    : refusedBeforeCrypto
+      ? { ...np("Signature verification was not attempted: the record was refused before key lookup."), present: true, algorithm: null, keyId: input.signingKeyId ?? null }
     : algorithm.status !== "PASS" || keyResolution.status !== "PASS"
       ? { ...np("Signature verification cannot be asserted until algorithm and key resolution pass."), present: true, algorithm: declaredAlgorithm === SE_V1_SIGNATURE_ALGORITHM ? SE_V1_SIGNATURE_ALGORITHM : null, keyId: input.signingKeyId ?? null }
       : { ...(input.signatureValid ? pass("Ed25519 verification succeeded against a resolved public key.") : fail("Ed25519 verification did not succeed against any resolved public key.")), present: true, algorithm: SE_V1_SIGNATURE_ALGORITHM, keyId: input.signingKeyId ?? null };
@@ -51,6 +60,7 @@ export function buildEvidenceVerificationContract(input) {
   if (input.status === "NOT_FOUND") return out("NOT_FOUND", "legacy_unsigned_evidence", "No evidence record was found.");
   if (input.status === "LEGACY_UNSIGNED") return out("LEGACY_UNSIGNED", "legacy_unsigned_evidence", "The record is retained as legacy evidence but has no cryptographic signature.");
   if (input.status === "UNAVAILABLE_RUNTIME") return out("UNAVAILABLE_RUNTIME", "unavailable_runtime_evidence", "Runtime signing was unavailable. No signature, hash-derivation, or chain-continuity claim is implied.");
+  if (refusedForSchemaVersion) return out("INVALID", "signed_evidence_v1", "The record declares a schema version outside the Signed Evidence v1 contract. It was refused before key lookup; no signature check was attempted.");
   if (algorithm.status === "FAIL") return out("UNSUPPORTED_ALGORITHM", "signed_evidence_v1", "The record declares an algorithm outside the Signed Evidence v1 contract.");
   if (keyResolution.status === "FAIL") return out("SIGNING_KEY_UNKNOWN", "signed_evidence_v1", "No trusted public key could be resolved for the declared key ID.");
   if (Object.values(checks).some((x) => x.status === "FAIL")) return out("INVALID", "signed_evidence_v1", "One or more performed verification layers failed.");

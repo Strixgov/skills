@@ -126,12 +126,48 @@ Verification Results
   Status: VERIFIED
 
 This record was cryptographically signed by the Strix governance kernel.
-The evidence hash and signature are independently verifiable.
+The signed envelope verifies against the supplied JWKS.
+Decision-content hash independently recomputed and matched. Chain continuity not checked.
 ```
 
-`Status: VERIFIED` is a **derived summary** of the three checks above —
-true if-and-only-if all three are true. The detailed checks are always
-reported so each can be audited independently.
+In evidence mode, `Status: VERIFIED` means the SE-v1 signature and binding
+between API fields and the signed envelope passed, and no performed
+decision-content hash check failed. It does **not** mean chain continuity or
+execution completion was verified. Inspect `verificationScope` and each check.
+
+The human summary uses `authenticatedRecord`, parsed from signature-verified
+canonical bytes. `record` in JSON output remains the **untrusted API response**
+for diagnostics. A conflicting API field yields `FIELD_MISMATCH` and exit 1,
+even when `signatureValid` is true. Capability, action, actor, timestamp and
+key identity are never displayed from unsigned convenience fields. Academy's
+signed `createdAt` is its writer timestamp (`hashedAt`), not the database
+insertion timestamp returned in the API's top-level `createdAt`.
+
+`hashValid` is now tri-state: `true`/`false` only after independent content
+hashing, and `null` (human output: `not checked`) if the hash profile or inputs
+are unavailable. It is **not** an alias for `signatureValid`. The supported
+Academy profile hashes JSON with the fixed insertion order `capabilityId`,
+`actorId`, `actorRole`, `actorEmail`, `action`, `reason`, `source`, `timestamp`;
+`timestamp` is `hashedAt` or the signed writer timestamp. The historical
+seven-field AI/cron profile is a restricted, explicitly reported fallback.
+Server `hashMatch`, `recomputedHash`, and `hashInputFields` are never trusted
+as verification results or algorithm instructions. Console decision-content
+hashing and historical timestamp search are not implemented by this path.
+
+JSON reports `hashReason`, `hashProfile`, `hashInputFields`,
+`recomputedEvidenceHash`, `fieldMismatches`, and `verificationScope`.
+`SIGNED_ENVELOPE_ONLY` means underlying content hashing was not performed;
+`SIGNED_ENVELOPE_AND_EVIDENCE_CONTENT` means it was independently recomputed
+and matched. Both leave `chainValid: null` in single-record mode. Neither
+establishes the custody of a caller-supplied JWKS, policy standing at use,
+provider outcome, or absence of an alternate execution route.
+
+New failure reasons include `EVIDENCE_HASH_MISMATCH` and
+`SIGNED_PAYLOAD_INVALID`; both exit 1. Unknown keys remain `UNVERIFIABLE`,
+legacy records remain `LEGACY_UNSIGNED`, and transport failures remain errors.
+Frozen SE-v1 bytes, signing keys, producers and public discovery endpoints are
+unchanged. This source fix does not update an installed or npm-published
+1.24.1; a separately reviewed release is required before using it in a capture.
 
 ---
 
@@ -690,3 +726,4 @@ The cryptographic primitives are standard (Ed25519 / SHA-256 / RFC 7517
 JWKS) — this package is a thin, audited wrapper around them, published
 so verification cannot be gated on Strix's continued cooperation or
 existence.
+

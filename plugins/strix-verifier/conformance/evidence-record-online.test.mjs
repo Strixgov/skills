@@ -8,7 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import crypto from "node:crypto";
-import { verify } from "../vendor/strixgov-verifier/src/index.mjs";
+import { verify, buildCanonicalPayload } from "../vendor/strixgov-verifier/src/index.mjs";
 
 function genKeyPair() {
   const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
@@ -23,7 +23,30 @@ function sign(privateKey, canonical) {
 
 const KID = "test-online-2026-07";
 const { privateKey, x } = genKeyPair();
-const CANONICAL = "test-canonical-payload-for-online-path-conformance";
+// The signed bytes MUST be a real SE v1 canonical payload, built by the
+// vendored package's own serializer (never a second one — CJ-1). Until
+// 2026-11-12 this was the free-text string "test-canonical-payload-for-online-
+// path-conformance": it carried no schemaVersion, so it only ever verified
+// because @strixgov/verifier <= 1.24.1 accepted ANY bytes the key signed —
+// exactly the permissiveness #2836 closed. 1.25.0 correctly refuses it
+// (COMPLIANCE_VIOLATION / SIGNED_PAYLOAD_INVALID), which turned three of these
+// tests red the moment the plugin re-vendored. A fixture easier than reality
+// was asserting a property real records do not have.
+const CANONICAL = buildCanonicalPayload({
+  schemaVersion: "1",
+  evidenceId: "1",
+  evidenceHash: "e".repeat(64),
+  proofChainHash: "p".repeat(64),
+  capabilityId: "test.online.conformance",
+  action: "allow",
+  actorId: "test_online_actor",
+  actorRole: "owner",
+  createdAt: "2026-07-01T00:00:00.000Z",
+  signingKeyId: KID,
+  environment: "test",
+  tenantId: "test-tenant",
+  regulatoryContext: { complianceMode: "eu-ai-act", euAiActArticle12: true, euAiActArticle14: true, euAiActArticle28: false },
+});
 const SIGNATURE = sign(privateKey, CANONICAL);
 const GOOD_JWKS = { keys: [{ kty: "OKP", crv: "Ed25519", kid: KID, x }] };
 

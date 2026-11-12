@@ -12,15 +12,13 @@ trust path: you reproduce the verdict yourself from public proof material + keys
 ## Install
 
 ```
-/plugin marketplace add Strixgov/skills
+/plugin marketplace add Strixgov/strix
 /plugin install strix-verifier@strixgov
 ```
 
-The marketplace is the public repository
-[`github.com/Strixgov/skills`](https://github.com/Strixgov/skills)
-(`.claude-plugin/marketplace.json`); `strixgov` is the marketplace name. It is
-the one public Strix marketplace. The verifier's package source is mirrored
-separately at [`github.com/Strixgov/strix`](https://github.com/Strixgov/strix).
+The marketplace lives at the root of the public mirror
+[`github.com/Strixgov/strix`](https://github.com/Strixgov/strix)
+(`.claude-plugin/marketplace.json`); `strixgov` is the marketplace name.
 
 ## In a restricted or sandboxed environment (read this first if you hit a 403)
 
@@ -66,7 +64,7 @@ them instead of dead-ending on the 403.
 | MCP server | `mcp/server.mjs` (`.mcp.json`) | Tools `strix_verify`, `strix_verify_record`, `strix_verify_swarm` an agent can call to get a structured verdict. |
 | Stop hook | `hooks/verify-on-stop.mjs` (`hooks/hooks.json`) | **Opt-in** continuous-trust check: re-verify a pinned record each turn. Off by default. |
 | CLI wrapper | `bin/strix-verify` | Stable entry point; prefers the vendored verifier, falls back to `npx`. |
-| Vendored verifier | `vendor/strixgov-verifier/` | The verbatim MIT-published `@strixgov/verifier@1.24.1`, so launching the verifier needs no network. |
+| Vendored verifier | `vendor/strixgov-verifier/` | The verbatim MIT-published `@strixgov/verifier@1.25.0`, so launching the verifier needs no network. |
 
 ## Use — slash command
 
@@ -113,7 +111,7 @@ even on a FAILED verdict. The verdict is re-derived by the verifier, not the hoo
 
 ```json
 {
-  "verifierVersion": "1.24.1",
+  "verifierVersion": "1.25.0",
   "proofBase": "https://www.strixgov.com",
   "jwksBase": "https://www.strixgov.com",
   "sampleRecord": "5686",
