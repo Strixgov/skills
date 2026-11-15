@@ -55,8 +55,12 @@ console.error(`Packing ${spec} …`);
 // its human-readable notice output ("sha512-O+MzZ1o5bd1Iv[...]VhEMO8NAU/Lig=="),
 // so scraping stderr yields a value that looks like a pin and pins nothing.
 // The JSON form carries the full integrity and the shasum.
+// On Windows `npm` is a .cmd shim, which spawnSync cannot run without a
+// shell (it fails ENOENT, which reads as "npm pack failed" with no stderr).
+// The arguments are a fixed spec and a mkdtemp path, so the shell is safe.
 const pack = spawnSync("npm", ["pack", spec, "--pack-destination", work, "--json"], {
   encoding: "utf8",
+  shell: process.platform === "win32",
 });
 if (pack.status !== 0) {
   console.error(pack.stderr || "npm pack failed");

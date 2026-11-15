@@ -23,31 +23,29 @@ function sign(privateKey, canonical) {
 
 const KID = "test-online-2026-07";
 const { privateKey, x } = genKeyPair();
-// The signed bytes MUST be a real SE v1 canonical payload, built by the
-// vendored package's own serializer (never a second one — CJ-1). Until
-// 2026-11-12 this was the free-text string "test-canonical-payload-for-online-
-// path-conformance": it carried no schemaVersion, so it only ever verified
-// because @strixgov/verifier <= 1.24.1 accepted ANY bytes the key signed —
-// exactly the permissiveness #2836 closed. 1.25.0 correctly refuses it
-// (COMPLIANCE_VIOLATION / SIGNED_PAYLOAD_INVALID), which turned three of these
-// tests red the moment the plugin re-vendored. A fixture easier than reality
-// was asserting a property real records do not have.
+// A real SE v1 (Console-form) canonical payload, built by the vendored
+// verifier's own serializer. Until verifier 1.24.1 this fixture signed an
+// arbitrary string; 1.25.0 parses the signed bytes before key lookup and
+// refuses anything that is not an SE v1 payload (SIGNED_PAYLOAD_INVALID), so
+// the old fixture tested a path real records never take.
 const CANONICAL = buildCanonicalPayload({
   schemaVersion: "1",
   evidenceId: "1",
-  evidenceHash: "e".repeat(64),
-  proofChainHash: "p".repeat(64),
+  evidenceHash: "a".repeat(64),
+  proofChainHash: "GENESIS",
   capabilityId: "test.online.conformance",
   action: "allow",
-  actorId: "test_online_actor",
-  actorRole: "owner",
+  actorId: "test-actor",
+  actorRole: "admin",
   createdAt: "2026-07-01T00:00:00.000Z",
   signingKeyId: KID,
   environment: "test",
   tenantId: "test-tenant",
-  regulatoryContext: { complianceMode: "eu-ai-act", euAiActArticle12: true, euAiActArticle14: true, euAiActArticle28: false },
+  regulatoryContext: null,
 });
 const SIGNATURE = sign(privateKey, CANONICAL);
+const TAMPERED = CANONICAL.replace('"action":"allow"', '"action":"deny"');
+if (TAMPERED === CANONICAL) throw new Error("tamper fixture did not change the payload");
 const GOOD_JWKS = { keys: [{ kty: "OKP", crv: "Ed25519", kid: KID, x }] };
 
 // A small routable test server: each route is a function of (req) -> response
@@ -94,13 +92,16 @@ test("online: valid signature over the real proof + JWKS endpoints -> VERIFIED",
 
 test("online: tampered signedPayload (bytes changed after signing) -> COMPLIANCE_VIOLATION, not VERIFIED", async () => {
   const server = await startServer({
-    "/api/proof/1": { body: { evidenceId: "1", schemaVersion: "1", signedPayload: CANONICAL + "-tampered", signature: SIGNATURE, signingKeyId: KID } },
+    // Still a well-formed SE v1 payload, so this reaches the signature check
+    // instead of being refused earlier as SIGNED_PAYLOAD_INVALID.
+    "/api/proof/1": { body: { evidenceId: "1", schemaVersion: "1", signedPayload: TAMPERED, signature: SIGNATURE, signingKeyId: KID } },
     "/.well-known/strix-jwks.json": { body: GOOD_JWKS },
   });
   try {
     const url = baseUrl(server);
     const r = await verify("1", { proofBase: url, jwksBase: url });
     assert.equal(r.verificationStatus, "COMPLIANCE_VIOLATION");
+    assert.equal(r.verificationReason, "SIGNATURE_INVALID");
     assert.equal(r.signatureValid, false);
   } finally {
     server.close();
